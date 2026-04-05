@@ -1,0 +1,93 @@
+---
+import Base from '../layouts/Base.astro';
+import Nav from '../components/Nav.astro';
+import Footer from '../components/Footer.astro';
+---
+
+<Base
+  title="About — Crontinel"
+  description="Crontinel is built by Harun Ray, a software engineer who got burned by silent cron failures one too many times."
+>
+  <Nav />
+
+  <main class="max-w-2xl mx-auto px-4 sm:px-6 py-16">
+    <h1 class="text-3xl font-bold text-white mb-8">About Crontinel</h1>
+
+    <div class="space-y-6 text-gray-400 text-sm leading-relaxed">
+
+      <p>
+        Crontinel started with a familiar story: a <code class="text-gray-300 bg-gray-900 px-1.5 py-0.5 rounded text-xs">send-invoices</code> job
+        silently failed for three days. No alert. No error. Customers didn't get invoices.
+        The generic cron monitor showed green the whole time because the scheduler
+        was technically still running — it just wasn't doing anything useful.
+      </p>
+
+      <p>
+        The root cause was a Horizon supervisor that had crashed. Horizon itself reported
+        "running." The supervisor that processed the <code class="text-gray-300 bg-gray-900 px-1.5 py-0.5 rounded text-xs">billing</code> queue
+        was not. There was no tool that could tell you that from the outside.
+      </p>
+
+      <p>
+        Crontinel was built to fix that gap. It reads Horizon's Redis keys directly —
+        the same data the Horizon dashboard shows you — and turns it into configurable
+        alerts. It also hooks into Laravel's scheduler events to record every cron run
+        with its exit code and duration, so you can see exactly what ran, when, and whether it succeeded.
+      </p>
+
+      <h2 class="text-white font-semibold text-base pt-4">Open source first</h2>
+
+      <p>
+        The core package is MIT licensed and free forever. Install it in 2 commands,
+        get a dark dashboard at <code class="text-gray-300 bg-gray-900 px-1.5 py-0.5 rounded text-xs">/crontinel</code>,
+        and configure Slack or email alerts in your <code class="text-gray-300 bg-gray-900 px-1.5 py-0.5 rounded text-xs">.env</code>.
+        No SaaS required.
+      </p>
+
+      <p>
+        The hosted SaaS adds multi-app dashboards, longer history retention, team access,
+        and a REST API. It's for teams who manage more than one Laravel app and want
+        a single pane of glass without running their own infrastructure.
+      </p>
+
+      <h2 class="text-white font-semibold text-base pt-4">Built by</h2>
+
+      <p>
+        <a href="https://github.com/HarunRRayhan" class="text-gray-300 hover:text-white underline" target="_blank" rel="noopener">Harun Ray</a>
+        — software engineer with 17 years in backend and cloud infrastructure.
+        AWS, Laravel, DevOps. Building developer tools that solve real problems.
+      </p>
+
+      <div class="flex items-center gap-4 pt-4">
+        <a
+          href="https://github.com/HarunRRayhan/crontinel"
+          class="text-sm text-gray-400 hover:text-white transition-colors flex items-center gap-2"
+          target="_blank"
+          rel="noopener"
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+            <path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/>
+          </svg>
+          GitHub
+        </a>
+        <a
+          href="https://x.com/HarunRRayhan"
+          class="text-sm text-gray-400 hover:text-white transition-colors"
+          target="_blank"
+          rel="noopener"
+        >
+          X / Twitter
+        </a>
+        <a
+          href="mailto:support@crontinel.com"
+          class="text-sm text-gray-400 hover:text-white transition-colors"
+        >
+          Email
+        </a>
+      </div>
+
+    </div>
+  </main>
+
+  <Footer />
+</Base>
