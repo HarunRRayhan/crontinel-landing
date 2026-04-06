@@ -5,7 +5,7 @@ import Footer from '../../components/Footer.astro';
 ---
 
 <Base
-  title="Crontinel vs Cronitor — Laravel Cron Monitoring Comparison"
+  title="Crontinel vs Cronitor: Laravel Cron Monitoring Comparison"
   description="Cronitor tells you a job ran. Crontinel tells you your Horizon supervisor is paused. Here's what that difference means for Laravel apps."
 >
   <Nav />
@@ -20,7 +20,7 @@ import Footer from '../../components/Footer.astro';
         Cronitor checks if your job pinged back.<br class="hidden sm:block" /> Crontinel checks if it should have run.
       </h1>
       <p class="text-gray-400 max-w-xl mx-auto">
-        Cronitor wraps cron jobs in ping-in/ping-out monitoring. It works — until your Horizon supervisor silently pauses and no jobs run at all. Cronitor sees nothing. Crontinel does.
+        Cronitor wraps cron jobs in ping-in/ping-out monitoring. It works, until your Horizon supervisor silently pauses and no jobs run at all. Cronitor sees nothing. Crontinel does.
       </p>
     </div>
 
@@ -29,7 +29,7 @@ import Footer from '../../components/Footer.astro';
       <div class="bg-gray-900 border border-gray-800 rounded-xl p-6">
         <h2 class="text-lg font-semibold text-white mb-2">The problem Cronitor misses</h2>
         <p class="text-gray-400 mb-4">
-          Cronitor watches for a ping from your job. If your job doesn't run because Horizon is paused, Cronitor waits for a ping that never comes — and alerts after a grace period, not immediately. By then, jobs have been silently dropped for minutes.
+          Cronitor watches for a ping from your job. If your job doesn't run because Horizon is paused, Cronitor waits for a ping that never comes, and alerts after a grace period, not immediately. By then, jobs have been silently dropped for minutes.
         </p>
         <div class="bg-gray-950 rounded-lg p-4 font-mono text-xs text-gray-400 space-y-1">
           <div><span class="text-red-400">✗</span> Horizon supervisor: paused (Cronitor doesn't know)</div>
@@ -41,7 +41,7 @@ import Footer from '../../components/Footer.astro';
       <div class="bg-gray-900 border border-gray-800 rounded-xl p-6">
         <h2 class="text-lg font-semibold text-white mb-2">What Crontinel sees instead</h2>
         <p class="text-gray-400 mb-4">
-          Crontinel reads Horizon's Redis keys directly. No pings required. The moment a supervisor pauses, Crontinel knows — and fires an alert.
+          Crontinel reads Horizon's Redis keys directly. No pings required. The moment a supervisor pauses, Crontinel knows and fires an alert immediately.
         </p>
         <div class="bg-gray-950 rounded-lg p-4 font-mono text-xs space-y-1">
           <div><span class="text-yellow-400">⚠</span> <span class="text-yellow-400">Horizon supervisor "default" paused 2m ago</span></div>
