@@ -1,0 +1,223 @@
+---
+title: "Debugging Silent Laravel Cron Failures in Production"
+description: "Debugging silent Laravel cron failures is harder than it sounds. The job never ran, the log is empty, and nobody got an alert. Here's how to find the real cause and make failures loud."
+date: 2026-04-06
+tags: ["laravel", "cron"]
+---
+
+Debugging silent Laravel cron failures is the worst kind of production incident. There's no exception in Sentry, no error in the log, no failed job in Horizon. The scheduled task just didn't run. Or it ran and did nothing. Either way, you find out from a customer.
+
+This post covers the most common causes, how to capture output instead of discarding it, and how to wire up alerts so failures stop being silent.
+
+## Why >> /dev/null 2>&1 makes every failure invisible
+
+The standard Laravel cron entry looks like this:
+
+```bash
+* * * * * cd /var/www/html && php artisan schedule:run >> /dev/null 2>&1
+```
+
+The `>> /dev/null 2>&1` part redirects both stdout and stderr to nothing. That includes PHP fatal errors, "Class not found" exceptions, missing env variable warnings, and permission errors. Every one of them disappears silently.
+
+Start debugging by removing that redirection and capturing output instead:
+
+```bash
+* * * * * cd /var/www/html && php artisan schedule:run >> /var/log/laravel-cron.log 2>&1
+```
+
+Now at least you have something to read. Check the log after the next cron tick runs.
+
+## The 5 most common silent failure causes
+
+### 1. Wrong user running the cron job
+
+The cron job runs as `root` or `ubuntu`, but your application files are owned by `www-data`. PHP might load fine, but then fail silently when it tries to write to `storage/`, create cache files, or read a `.env` that has restrictive permissions.
+
+Check which user your crontab belongs to:
+
+```bash
+crontab -l         # current user's crontab
+sudo crontab -l    # root's crontab
+crontab -u www-data -l   # www-data's crontab
+```
+
+The user running `php artisan schedule:run` needs read access to `.env`, write access to `storage/` and `bootstrap/cache/`, and execute access to the project directory.
+
+Fix it by editing the correct user's crontab:
+
+```bash
+sudo crontab -u www-data -e
+```
+
+### 2. Missing or wrong environment variables
+
+When a cron runs, it inherits a minimal environment. It does not inherit your shell's exported variables. That means `APP_KEY`, `DB_HOST`, `REDIS_URL`, and anything else your application depends on must come from `.env`, not from the shell.
+
+The failure mode is subtle: Laravel boots, reads `.env`, but the `.env` path is resolved relative to the working directory. If the `cd` in your cron entry is wrong or missing, Laravel finds no `.env` and falls back to defaults. No error, just wrong behavior.
+
+Always use an absolute path in the `cd`:
+
+```bash
+* * * * * cd /var/www/html && php artisan schedule:run >> /var/log/laravel-cron.log 2>&1
+```
+
+Verify the resolved path works by running the exact command manually as the cron user:
+
+```bash
+sudo -u www-data bash -c "cd /var/www/html && php artisan schedule:run"
+```
+
+### 3. Non-zero exit code treated as success
+
+A scheduled command can throw an exception internally, catch it, log it somewhere you're not watching, and then return exit code 0. From the cron daemon's perspective, everything succeeded.
+
+The inverse is also common: a perfectly healthy command exits with code 1 because of a third-party library that doesn't follow conventions. The scheduler marks it as failed even though the work completed.
+
+Check your command's exit behavior explicitly:
+
+```php
+protected function handle(): int
+{
+    try {
+        // your work
+        return Command::SUCCESS;
+    } catch (\Exception $e) {
+        $this->error($e->getMessage());
+        report($e);
+        return Command::FAILURE;
+    }
+}
+```
+
+The `Command::FAILURE` return is what triggers `ScheduledTaskFailed`. If you swallow exceptions and return `SUCCESS`, the event never fires.
+
+### 4. Symlinked storage breaking file paths
+
+On servers where the `storage` directory is symlinked outside the project (common with Envoyer and zero-downtime deploys), relative path resolution inside scheduled tasks can break. A task that writes to `storage/app/exports/` might resolve to the wrong physical path after a deploy creates a new release directory.
+
+Check what `storage_path()` actually resolves to from within a running cron context:
+
+```bash
+sudo -u www-data bash -c "cd /var/www/html && php artisan tinker --execute=\"echo storage_path();\""
+```
+
+Confirm the symlink target is what you expect:
+
+```bash
+ls -la /var/www/html/storage
+readlink -f /var/www/html/storage
+```
+
+### 5. SELinux or file permission blocking execution
+
+On RHEL, CentOS, and Amazon Linux 2 instances, SELinux can block PHP from executing certain commands or writing to certain directories even when Unix permissions look correct. The failure is silent from PHP's perspective because the OS-level denial doesn't surface as a PHP exception.
+
+Check for SELinux denials:
+
+```bash
+sudo ausearch -m avc -ts recent
+sudo tail -f /var/log/audit/audit.log | grep denied
+```
+
+If you see `php` or `artisan` mentioned in those denials, you have an SELinux issue, not a code issue. The fix depends on your policy, but a starting point is checking the context on your project directory:
+
+```bash
+ls -Z /var/www/html
+```
+
+## Capturing command output for real debugging
+
+Instead of swallowing output, pipe it to a log file with timestamps:
+
+```bash
+* * * * * cd /var/www/html && php artisan schedule:run 2>&1 | while IFS= read -r line; do echo "$(date '+%Y-%m-%d %H:%M:%S') $line"; done >> /var/log/laravel-schedule.log
+```
+
+For cleaner log rotation, configure it in `/etc/logrotate.d/laravel-schedule`:
+
+```
+/var/log/laravel-schedule.log {
+    daily
+    rotate 7
+    compress
+    missingok
+    notifempty
+}
+```
+
+Within your Laravel application, you can also direct per-task output to a dedicated file using `appendOutputTo`:
+
+```php
+$schedule->command('reports:generate')
+    ->daily()
+    ->appendOutputTo(storage_path('logs/reports-generate.log'));
+```
+
+## Setting up ScheduledTaskFailed alerts
+
+Laravel fires `Illuminate\Console\Events\ScheduledTaskFailed` when a scheduled command exits with a non-zero status code. Wire up a listener to get notified immediately:
+
+```php
+// app/Providers/EventServiceProvider.php
+protected $listen = [
+    \Illuminate\Console\Events\ScheduledTaskFailed::class => [
+        \App\Listeners\NotifyOnScheduledTaskFailure::class,
+    ],
+];
+```
+
+```php
+// app/Listeners/NotifyOnScheduledTaskFailure.php
+namespace App\Listeners;
+
+use Illuminate\Console\Events\ScheduledTaskFailed;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Notification;
+use App\Notifications\ScheduledTaskFailedNotification;
+
+class NotifyOnScheduledTaskFailure
+{
+    public function handle(ScheduledTaskFailed $event): void
+    {
+        Log::error('Scheduled task failed', [
+            'task' => $event->task->getSummaryForDisplay(),
+            'exit_code' => $event->task->exitCode,
+        ]);
+
+        Notification::route('mail', config('monitoring.alert_email'))
+            ->notify(new ScheduledTaskFailedNotification($event->task));
+    }
+}
+```
+
+This catches failures for tasks that exit with non-zero codes. It does not catch tasks that never run at all because the cron daemon itself is down, the server rebooted, or the crontab entry was removed.
+
+## Checking task health from the CLI
+
+If you have Crontinel installed, the `crontinel:check` command gives you a quick health snapshot across all registered scheduled tasks:
+
+```bash
+php artisan crontinel:check
+```
+
+It reports each task's last run time, whether it ran within its expected window, and whether the most recent execution succeeded. This is useful both for ad-hoc debugging and for running as part of a deploy verification step:
+
+```bash
+php artisan deploy:finish
+php artisan crontinel:check --fail-on-missed
+```
+
+If any task missed its expected window, the command exits non-zero, which causes your deploy pipeline to flag it.
+
+## Checklist before closing a silent failure incident
+
+Before marking a silent cron failure as resolved, confirm all of these:
+
+- The crontab entry uses the correct user and an absolute `cd` path
+- Output is no longer discarded to `/dev/null`
+- The command itself exits with the correct status codes
+- `ScheduledTaskFailed` listener is wired up and tested
+- Storage paths resolve correctly after the most recent deploy
+- No SELinux or permission denials in the audit log
+
+Silent failures rarely have a single cause. Most production incidents involve two or three of these factors overlapping. Fix the one you found, then check the rest before the next incident finds you.

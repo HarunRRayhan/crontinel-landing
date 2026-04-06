@@ -1,0 +1,260 @@
+---
+title: "Laravel Horizon Redis Keys Explained"
+description: "A comprehensive reference of every Redis key Laravel Horizon stores: what each key contains, what it means operationally, and how to inspect it with redis-cli when debugging."
+date: 2026-04-06
+tags: ["laravel", "horizon"]
+---
+
+Laravel Horizon Redis keys explained: this post is a reference for developers who need to understand what Horizon is actually storing in Redis, not just what the dashboard shows. If you're debugging a stuck supervisor, investigating why throughput dropped, or building external monitoring, reading these keys directly is the fastest path to answers.
+
+All key names use the prefix `horizon:` by default. If you've configured a custom prefix in `config/horizon.php` via the `prefix` setting, substitute that prefix throughout.
+
+## Inspecting keys with redis-cli
+
+Before the key reference, here are the redis-cli commands you'll use most:
+
+```bash
+# Get a string value
+redis-cli get horizon:status
+
+# Get all fields and values from a hash
+redis-cli hgetall horizon:some-key
+
+# List members of a set
+redis-cli smembers horizon:supervisors
+
+# Get the length of a list (queue depth)
+redis-cli llen horizon:queue:default
+
+# Find all keys matching a pattern
+redis-cli keys "horizon:*"
+redis-cli keys "horizon:*:throughput"
+
+# Watch a key's value update in real time
+redis-cli --watch -i 1 get horizon:status
+```
+
+For a running production system, prefix commands with the connection flag if Horizon uses a non-default Redis connection:
+
+```bash
+redis-cli -h 127.0.0.1 -p 6379 -a yourpassword get horizon:status
+```
+
+---
+
+## horizon:status
+
+**Type:** String
+
+**Values:** `running`, `paused`, or missing (treated as running)
+
+**What it means:** The overall Horizon state. This is set by `php artisan horizon:pause` and `php artisan horizon:continue`. When set to `paused`, all supervisors stop dequeuing jobs while keeping their worker processes alive. The Horizon dashboard shows a "Paused" banner.
+
+**When it changes:** Immediately on `horizon:pause` and `horizon:continue`. Also cleared when Horizon is terminated and restarted fresh.
+
+```bash
+redis-cli get horizon:status
+```
+
+If this key doesn't exist, Horizon treats it as running. That's normal if Horizon was never explicitly paused.
+
+---
+
+## horizon:supervisors
+
+**Type:** Set
+
+**Members:** Supervisor identifiers in the format `hostname:pid`
+
+**What it means:** The set of active supervisor processes. Each supervisor registered at startup adds itself to this set. When a supervisor shuts down gracefully, it removes itself. If a supervisor crashes, it stays in the set until its heartbeat expires and Horizon's supervisor monitor prunes it.
+
+**When it changes:** On supervisor startup (member added) and graceful shutdown (member removed). Crash survivors linger until pruned.
+
+```bash
+redis-cli smembers horizon:supervisors
+# Output: 1) "prod-web-01:12345"
+```
+
+---
+
+## horizon:\{supervisor-id\}:supervisor
+
+**Type:** Hash
+
+**Fields:** `name`, `status`, `pid`, `options`, `processes`, `lastHeartbeat`
+
+**What it means:** The full state of a specific supervisor process. The `lastHeartbeat` field is a Unix timestamp updated every few seconds by the supervisor process. If it's more than 30 seconds old, the supervisor is effectively dead. The `processes` field is a JSON-encoded count of workers per queue.
+
+**When it changes:** The supervisor updates its own hash on every heartbeat cycle, which is roughly every 5 seconds.
+
+```bash
+redis-cli hgetall "horizon:prod-web-01:12345:supervisor"
+```
+
+Pay attention to `lastHeartbeat`. If it's stale by more than a minute while the set still lists this supervisor, something killed the process without a clean shutdown.
+
+---
+
+## horizon:\{supervisor-id\}:workers
+
+**Type:** Set
+
+**Members:** Worker process identifiers (hostname:pid format)
+
+**What it means:** All worker processes managed by a given supervisor. Each worker process is tracked here for the duration of its lifecycle. This is how Horizon knows how many workers are allocated per supervisor and which ones are idle versus processing.
+
+```bash
+redis-cli smembers "horizon:prod-web-01:12345:workers"
+```
+
+An empty set for a supervisor that's listed in `horizon:supervisors` means the supervisor is alive but has spawned no workers. Check the supervisor's `minProcesses` configuration.
+
+---
+
+## horizon:\{supervisor-id\}:\{queue\}:throughput
+
+**Type:** Hash (time-bucketed counter)
+
+**What it means:** The number of jobs processed by this supervisor on this queue, bucketed by time window. Horizon uses this to calculate throughput for the dashboard's "Throughput" graphs. Each field in the hash is a timestamp bucket and each value is a count.
+
+**When it changes:** Incremented every time a worker completes a job.
+
+```bash
+redis-cli keys "horizon:*:throughput"
+redis-cli hgetall "horizon:prod-web-01:12345:default:throughput"
+```
+
+If all throughput hashes show zero counts during a period when jobs should be processing, workers are alive but not completing jobs. Investigate worker memory limits, time limits, and whether jobs are timing out before completion.
+
+---
+
+## horizon:\{supervisor-id\}:\{queue\}:runtime
+
+**Type:** Hash (time-bucketed runtime)
+
+**What it means:** Average job runtime per time bucket for this supervisor and queue. Used for the runtime graph on the Horizon dashboard.
+
+```bash
+redis-cli hgetall "horizon:prod-web-01:12345:default:runtime"
+```
+
+A sudden spike in average runtime usually means a downstream dependency slowed down. Cross-reference with deploy times if you see a step change after a release.
+
+---
+
+## horizon:recent-jobs
+
+**Type:** List
+
+**What it means:** A capped list of recently completed jobs. Horizon uses this to populate the "Recent Jobs" tab on the dashboard. The list stores serialized job payloads with metadata including the connection, queue, status, and timestamps. The list is capped at the value configured in `trim` under `horizon.defaults`.
+
+**When it changes:** Appended on every completed job. Oldest entries are trimmed automatically.
+
+```bash
+redis-cli llen horizon:recent-jobs
+redis-cli lindex horizon:recent-jobs 0
+```
+
+The last entry (`lindex horizon:recent-jobs 0`) is the most recently completed job. If this key hasn't been updated in a while during a busy period, workers have stopped completing jobs.
+
+---
+
+## horizon:failed-jobs
+
+**Type:** List
+
+**What it means:** Serialized records of failed jobs. This is what populates the "Failed Jobs" tab in the dashboard. Each entry includes the job payload, the exception message, the stack trace, and the failure timestamp.
+
+**When it changes:** Appended when a job exhausts its retry attempts and is marked as permanently failed.
+
+```bash
+redis-cli llen horizon:failed-jobs
+```
+
+Note: Laravel's native `failed_jobs` database table and Horizon's `horizon:failed-jobs` Redis key serve similar purposes but are separate stores. Horizon uses the Redis key for its own dashboard. The database table is used by `php artisan queue:failed` commands.
+
+---
+
+## horizon:pending-jobs
+
+**Type:** Hash (queue name to count)
+
+**What it means:** A snapshot of pending job counts per queue. Horizon updates this periodically for the dashboard's "Pending Jobs" metrics. The counts here may lag slightly behind actual queue lengths.
+
+For real-time queue depth, query the actual queue keys directly rather than this snapshot:
+
+```bash
+redis-cli llen "horizon:queues:default"
+redis-cli llen "horizon:queues:emails"
+redis-cli llen "horizon:queues:high"
+```
+
+---
+
+## horizon:completed-jobs
+
+**Type:** Hash (time-bucketed counts)
+
+**What it means:** Aggregate completed job counts across all queues, bucketed by time. This powers the main throughput graph on the Horizon dashboard.
+
+```bash
+redis-cli hgetall horizon:completed-jobs
+```
+
+The field names are Unix timestamps rounded to a time window. Compare buckets before and after a deploy to see if throughput changed.
+
+---
+
+## horizon:queues:\{queue-name\}
+
+**Type:** List
+
+**What it means:** The actual queue contents. Each element is a serialized job payload waiting to be picked up by a worker. This is the real source of truth for queue depth.
+
+```bash
+redis-cli llen "horizon:queues:default"
+redis-cli llen "horizon:queues:high"
+```
+
+If `llen` returns a large number that's not decreasing, workers are not keeping up. If it's increasing, processing is slower than enqueueing. If it's zero but jobs are expected, check whether jobs are being sent to a different queue name than you think.
+
+---
+
+## horizon:job-id:\{uuid\}
+
+**Type:** Hash
+
+**What it means:** The full record for a specific job identified by UUID. This is how Horizon links a dashboard job detail view to the underlying data. Fields include `id`, `connection`, `queue`, `payload`, `status`, `pushedAt`, `reservedAt`, `completedAt`, and `exception` if the job failed.
+
+```bash
+redis-cli hgetall "horizon:job-id:abc123-uuid-here"
+```
+
+If you have a job UUID from a log or error report, this is how you get its complete history without going through the dashboard.
+
+---
+
+## Key expiration and data retention
+
+Most Horizon keys have TTLs. Throughput and runtime buckets expire after a few hours. Job detail keys (`horizon:job-id:*`) expire after the period defined by `trim.recent` in `config/horizon.php`, defaulting to 60 minutes.
+
+Check a key's remaining TTL:
+
+```bash
+redis-cli ttl "horizon:job-id:abc123"
+```
+
+If you need longer retention for job history or throughput data, that's a use case where an external monitoring tool is more appropriate than extending Horizon's Redis TTLs. Increasing TTLs directly increases Redis memory consumption.
+
+---
+
+## Using this reference for external monitoring
+
+These keys are stable across Horizon versions within the same major release. If you're building a custom health check, a few keys cover most operational concerns:
+
+- `horizon:status` for paused detection
+- `horizon:supervisors` and the per-supervisor heartbeat timestamps for liveness
+- `horizon:queues:{'{name}'}` lengths for depth monitoring (replace `name` with your queue name)
+- `horizon:failed-jobs` length for failure rate tracking
+
+Crontinel uses these keys (plus task-level tracking for scheduled commands) to build monitoring that works even when the Horizon dashboard is inaccessible or the application itself is down.

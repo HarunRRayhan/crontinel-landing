@@ -17,23 +17,29 @@ const comparisons = [
     verdict: 'Can\'t see queue depth or failed jobs.',
   },
   {
-    name: 'Better Uptime',
-    slug: 'betteruptime',
-    tagline: 'HTTP uptime + on-call routing. Not cron-specific.',
-    verdict: 'Won\'t tell you your Horizon supervisor is paused.',
+    name: 'Better Stack',
+    slug: 'better-stack',
+    tagline: 'Uptime and log aggregation. Not Laravel-specific.',
+    verdict: 'Won\'t catch a paused Horizon supervisor.',
   },
   {
     name: 'Laravel Telescope',
     slug: 'telescope',
     tagline: 'Great for debugging. Not for monitoring.',
-    verdict: 'No alerting, no dashboard, no scheduled-job tracking.',
+    verdict: 'No alerting, no thresholds, no production visibility.',
+  },
+  {
+    name: 'Datadog',
+    slug: 'datadog',
+    tagline: 'Full observability platform. Requires DIY setup for queues.',
+    verdict: 'Queue monitoring needs custom metrics and days of config.',
   },
 ];
 ---
 
 <Base
   title="Crontinel vs Alternatives — Laravel Monitoring Comparison"
-  description="How Crontinel compares to Cronitor, Healthchecks.io, Better Uptime, and Telescope for Laravel queue and cron monitoring."
+  description="How Crontinel compares to Cronitor, Healthchecks.io, Better Stack, Telescope, and Datadog for Laravel queue and cron monitoring."
 >
   <Nav />
 

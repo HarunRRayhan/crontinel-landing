@@ -1,0 +1,127 @@
+---
+import Base from '../../layouts/Base.astro';
+import Nav from '../../components/Nav.astro';
+import Footer from '../../components/Footer.astro';
+---
+
+<Base
+  title="Crontinel vs Better Stack: Laravel Queue Monitoring Comparison"
+  description="Better Stack is great for uptime and logs. But it has no idea what Laravel Horizon is doing. Here's where each tool fits."
+>
+  <Nav />
+
+  <main class="max-w-4xl mx-auto px-4 sm:px-6 py-16">
+
+    <div class="text-center mb-14">
+      <div class="inline-block text-xs font-semibold text-gray-400 bg-gray-800 border border-gray-700 px-3 py-1 rounded-full mb-4">
+        Crontinel vs Better Stack
+      </div>
+      <h1 class="text-3xl sm:text-4xl font-bold text-white mb-4">
+        Better Stack monitors your server.<br class="hidden sm:block" /> Crontinel monitors your queues.
+      </h1>
+      <p class="text-gray-400 max-w-xl mx-auto">
+        Better Stack (formerly Logtail and Better Uptime) is a solid platform for uptime checks, log aggregation, and on-call routing. It's a good tool for what it does. But it has no understanding of Laravel Horizon, queue depth, or supervisor state.
+      </p>
+    </div>
+
+    <div class="space-y-8 mb-16">
+
+      <div class="bg-gray-900 border border-gray-800 rounded-xl p-6">
+        <h2 class="text-lg font-semibold text-white mb-2">What Better Stack does well</h2>
+        <p class="text-gray-400">
+          Better Stack shines at HTTP uptime monitoring, structured log search via Logtail, and on-call scheduling with escalation policies. If you need to know your site is up and your logs are searchable, it handles that well. For teams already using it for uptime, it's a sensible default.
+        </p>
+      </div>
+
+      <div class="bg-gray-900 border border-gray-800 rounded-xl p-6">
+        <h2 class="text-lg font-semibold text-white mb-2">The gap: Laravel internals</h2>
+        <p class="text-gray-400 mb-4">
+          Your site can return HTTP 200 while Horizon is paused and 2,000 jobs sit unprocessed. Better Stack won't notice. It monitors the outside of your app. Crontinel reads the inside.
+        </p>
+        <div class="bg-gray-950 rounded-lg p-4 font-mono text-xs text-gray-400 space-y-1">
+          <div><span class="text-green-400">✓</span> Better Stack: site responding (HTTP 200)</div>
+          <div><span class="text-red-400">✗</span> Horizon supervisor: paused (Better Stack doesn't know)</div>
+          <div><span class="text-red-400">✗</span> Queue "emails": 2,041 jobs backed up, oldest 14 min</div>
+          <div><span class="text-red-400">✗</span> Failed jobs per minute: 23 (Better Stack doesn't know)</div>
+        </div>
+      </div>
+
+      <div class="bg-gray-900 border border-gray-800 rounded-xl p-6">
+        <h2 class="text-lg font-semibold text-white mb-2">What Crontinel covers instead</h2>
+        <p class="text-gray-400 mb-4">
+          Crontinel connects to the same Redis instance Horizon uses and reads its state directly. No polling your HTTP endpoints. No log parsing. Real-time visibility into the things that actually affect your users.
+        </p>
+        <div class="bg-gray-950 rounded-lg p-4 font-mono text-xs space-y-1">
+          <div><span class="text-yellow-400">⚠</span> <span class="text-yellow-400">Horizon supervisor "default" paused 3m ago</span></div>
+          <div><span class="text-red-400">✗</span> Queue "emails": depth 2,041, oldest job 14m</div>
+          <div><span class="text-red-400">✗</span> Failed jobs: 23/min (threshold: 5/min)</div>
+          <div><span class="text-green-400">✓</span> Alert fired: Slack #alerts, PagerDuty</div>
+        </div>
+      </div>
+
+    </div>
+
+    <div class="overflow-x-auto mb-16">
+      <table class="w-full text-sm">
+        <thead>
+          <tr class="border-b border-gray-800 text-left">
+            <th class="pb-3 text-gray-400 font-medium">Capability</th>
+            <th class="pb-3 text-gray-400 font-medium text-center">Crontinel</th>
+            <th class="pb-3 text-gray-400 font-medium text-center">Better Stack</th>
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-gray-800/50">
+          {[
+            ['Horizon supervisor status (per supervisor)', true, false],
+            ['Horizon paused detection', true, false],
+            ['Queue depth per queue', true, false],
+            ['Oldest pending job age', true, false],
+            ['Failed jobs per minute', true, false],
+            ['Laravel scheduled job run history', true, false],
+            ['HTTP uptime monitoring', false, true],
+            ['Log aggregation and search', false, true],
+            ['On-call scheduling and escalation', false, true],
+            ['Slack alerts', true, true],
+            ['Email alerts', true, true],
+            ['No code wrapping needed', true, false],
+            ['Open source / self-hostable', true, false],
+            ['Built for Laravel', true, false],
+          ].map(([cap, ours, theirs]) => (
+            <tr>
+              <td class="py-3 text-gray-300">{cap}</td>
+              <td class="py-3 text-center">{ours ? <span class="text-green-400">✓</span> : <span class="text-red-400">✗</span>}</td>
+              <td class="py-3 text-center">{theirs ? <span class="text-green-400">✓</span> : <span class="text-red-400">✗</span>}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+
+    <div class="bg-gray-900 border border-gray-800 rounded-xl p-6 mb-8">
+      <h2 class="text-lg font-semibold text-white mb-2">They solve different problems</h2>
+      <p class="text-gray-400">
+        Many teams use both. Better Stack for uptime and log search, Crontinel for queue and scheduler health. They don't overlap much. If you're a Laravel team and your only monitoring is Better Stack, there's a category of failure it will never catch.
+      </p>
+    </div>
+
+    <div class="bg-gray-900 border border-green-500/20 rounded-xl p-8 text-center">
+      <h2 class="text-xl font-bold text-white mb-2">Add Laravel-specific monitoring in two commands</h2>
+      <p class="text-gray-400 mb-6">
+        Install the open-source package and Crontinel starts tracking Horizon and your scheduled jobs automatically.
+      </p>
+      <div class="bg-gray-950 rounded-lg p-4 font-mono text-sm text-green-400 text-left max-w-sm mx-auto mb-6">
+        <div>composer require harunrrayhan/crontinel</div>
+        <div>php artisan crontinel:install</div>
+      </div>
+      <a
+        href="https://app.crontinel.com/register"
+        class="inline-block bg-green-500 hover:bg-green-400 text-black font-semibold px-6 py-2.5 rounded transition-colors"
+      >
+        Start free
+      </a>
+    </div>
+
+  </main>
+
+  <Footer />
+</Base>

@@ -1,0 +1,132 @@
+---
+title: "Laravel Cron and Queue Monitoring Tools: What Each One Actually Does"
+description: "A honest breakdown of every Laravel cron and queue monitoring tool in 2025: ping monitors, APM tools, and purpose-built options. What each one monitors, what it misses, and when to use it."
+date: 2026-04-06
+tags: ["laravel", "monitoring"]
+---
+
+Laravel cron and queue monitoring tools in 2025 fall into three categories that solve genuinely different problems. Most teams pick one, assume they're covered, and then discover the gaps during an incident. This post breaks down what each category can and cannot do, then goes tool by tool.
+
+Nothing here is dismissed as useless. Every tool listed has a legitimate use case. The goal is to be accurate about what each one actually monitors so you can make informed decisions about what to combine.
+
+---
+
+## The three categories and what they cover
+
+**Ping monitors** (Cronitor, Healthchecks.io, Better Stack cron monitoring) work by expecting a heartbeat HTTP request from your application at a regular interval. If the ping doesn't arrive, you get an alert. They're reliable for detecting that a job completed. They cannot tell you what happened inside the job, whether the job produced correct output, or why it failed.
+
+**APM and observability tools** (Datadog, New Relic, Sentry) capture exceptions, traces, and performance data. They're excellent at answering "what error occurred?" They're weak at answering "did this job run at all?" because they depend on your application emitting data. If the job never runs, there's nothing to emit.
+
+**Laravel-native and purpose-built tools** (Horizon dashboard, Telescope, Forge Heartbeats, Crontinel) understand the Laravel job system's data model. They can read queue depths, worker states, and scheduler metadata without your application needing to send anything. They're most useful for operational monitoring of the Laravel runtime itself.
+
+---
+
+## Tool-by-tool breakdown
+
+### Cronitor
+
+**What it monitors:** Whether a cron job or scheduled task completed within the expected time window. Cronitor works via pings: you add a `curl` command to your cron entry or use the Cronitor SDK's `notifyBefore` and `notifyAfter` wrappers.
+
+**What it misses:** Queue workers and Horizon health. Cronitor doesn't know whether your jobs are processing, whether your queues are backed up, or whether Horizon is paused. It only knows about things you've explicitly instrumented with a ping. A cron job can ping Cronitor successfully while completing no actual work if the failure is inside the work itself rather than the process exit.
+
+**Best use case:** External heartbeat verification for critical cron jobs where you need to know the job ran to completion from a third-party perspective. Good for scheduled tasks that are simple and deterministic. Also useful as a dead man's switch: if your server goes down entirely, Cronitor alerts you, which in-process monitoring cannot do.
+
+**Integration with Laravel:**
+
+```php
+$schedule->command('reports:send')
+    ->daily()
+    ->pingOnSuccess('https://cronitor.link/p/your-monitor-token/run');
+```
+
+---
+
+### Healthchecks.io
+
+**What it monitors:** Heartbeat-based cron monitoring, same model as Cronitor. Jobs ping a unique URL on completion. If the ping doesn't arrive within the grace period, you get an alert.
+
+**What it misses:** Same category limitations as Cronitor. No visibility into queue internals, job content, or worker state. Pings only tell you the process reached the ping line in your code.
+
+**Best use case:** Cost-effective cron heartbeat monitoring. Healthchecks.io has a generous free tier and is a common choice for smaller teams monitoring a handful of critical scheduled tasks. Open source self-hosted version is available if you need it on-premises.
+
+**Integration with Laravel:**
+
+```php
+$schedule->command('backups:run')
+    ->daily()
+    ->thenPingUrl('https://hc-ping.com/your-uuid-here');
+```
+
+---
+
+### Better Stack (Uptime + Logs)
+
+**What it monitors:** Two separate products relevant here. Better Stack Uptime monitors URLs, including cron heartbeat endpoints (same model as Cronitor). Better Stack Logs aggregates log data and can alert on log patterns.
+
+**What it misses:** Like other ping monitors, the cron heartbeat product doesn't see inside job execution. The logs product can surface errors that appear in logs, but requires your application to be logging failures in the first place. Silent failures that produce no log output are invisible.
+
+**Best use case:** Teams that want uptime monitoring and log aggregation in one platform. The log-based alerting is genuinely useful if you're shipping Laravel logs to Better Stack, because you can alert on specific exception patterns or queue failure messages. It's complementary to heartbeat monitoring rather than a replacement.
+
+---
+
+### Laravel Telescope
+
+**What it monitors:** Detailed records of every request, job, exception, query, notification, and scheduled task run. Telescope stores this data locally (usually in a `telescope_entries` database table) and gives you a local dashboard to browse it.
+
+**What it misses:** Alerting and external notification. Telescope is observability, not monitoring. It records what happened, but it doesn't tell you when something goes wrong unless you're watching the dashboard. It also has a significant performance overhead in high-traffic applications, which is why most teams disable it in production or sample heavily.
+
+**Best use case:** Development and staging environments, and production debugging when you need to trace exactly what happened with a specific job or request. Telescope is excellent for answering "what exactly did this job do?" questions. It's not a substitute for alerting on failures.
+
+```php
+// config/telescope.php - sample only 1 in 10 requests in production
+'filter' => function (IncomingEntry $entry) {
+    return Telescope::isRecording() &&
+        random_int(1, 10) === 1;
+},
+```
+
+---
+
+### Laravel Forge Heartbeats
+
+**What it monitors:** Simple HTTP ping monitoring for URLs you define. Forge checks whether a URL returns a 200 status code on a configurable interval. You can create a heartbeat URL in your application that checks basic dependencies (database reachable, Redis available) and Forge pings it.
+
+**What it misses:** Everything queue and cron specific. Forge Heartbeats don't know about Horizon, queue depths, or scheduled task execution. A heartbeat URL that checks Redis connectivity will succeed even when Horizon is paused or the queue is backed up with 10,000 pending jobs.
+
+**Best use case:** Basic infrastructure health checks for teams already using Laravel Forge. Good as a first line of defense against complete server or application outages. Not a standalone solution for background job monitoring.
+
+---
+
+### Crontinel
+
+**What it monitors:** Horizon health (status, supervisor liveness, worker throughput), queue depth per queue, scheduled task run history (whether each task ran within its expected window), and job failure rates. Monitoring runs externally, so it works even when your application is degraded.
+
+**What it misses:** Application-level business logic validation. Crontinel can tell you that a job ran and succeeded. It can't tell you whether the report that job generated has correct numbers, or whether the email that job sent reached its recipient. For that kind of content validation, you need Telescope or custom logging.
+
+**Best use case:** Teams running Laravel Horizon in production who need more visibility than the Horizon dashboard provides. Crontinel covers the monitoring gap between "Horizon is running" (process check) and "jobs are actually completing correctly" (content check). It's especially useful for catching missed cron tasks, which ping monitors and APM tools both miss unless you've explicitly instrumented every task.
+
+```php
+// After installing via composer
+composer require crontinel/laravel
+
+// Register tasks for monitoring
+$schedule->command('invoices:generate')
+    ->daily()
+    ->monitored(); // Crontinel tracks run history and alerts on misses
+```
+
+---
+
+## What to combine
+
+No single tool covers everything. Here's a practical starting point for most Laravel production applications:
+
+**If you have Horizon:** Add Crontinel for Horizon health and cron run history. Add Cronitor or Healthchecks.io for any critical cron jobs that need external heartbeat verification (backups, billing tasks, anything where you need a third-party record that it ran).
+
+**If you don't have Horizon:** Cronitor or Healthchecks.io for cron heartbeats. Better Stack Logs or Sentry for exception-based alerting on queue failures.
+
+**For debugging, not alerting:** Telescope in staging environments. Direct Redis key inspection in production when Horizon's dashboard isn't giving you enough detail.
+
+The categories that overlap the least are ping monitors (external, process-level) and Laravel-native tools (internal, content-aware). Running one of each covers the failure modes the other misses. Adding an APM tool on top gives you the exception-level detail for post-incident investigation.
+
+The failure mode that all of these miss without explicit instrumentation is a scheduled task that runs, exits successfully, but produces no useful output. That's a code correctness problem, not an infrastructure monitoring problem. Monitoring tells you the job ran. It can't tell you the job was right.

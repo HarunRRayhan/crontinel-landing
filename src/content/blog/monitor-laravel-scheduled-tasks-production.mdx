@@ -1,0 +1,182 @@
+---
+title: "How to Monitor Laravel Scheduled Tasks in Production"
+description: "schedule:run failing is completely silent by default. Here's how to wire up event listeners, record exit codes and durations, and alert on missed or failed scheduled tasks."
+date: 2026-04-06
+tags: ["laravel", "scheduling"]
+---
+
+Monitoring Laravel scheduled tasks in production is one of those things that sounds solved but usually isn't. You set up a crontab entry, Laravel handles the schedule, and you assume it works. Then one day a task that should run every five minutes hasn't fired in two hours and you find out because a customer complains.
+
+This post covers how to actually monitor Laravel scheduled tasks in production: what events are available, how to record execution data, and how to alert on failures and missed runs.
+
+## Why schedule:run failing is silent
+
+The crontab entry for a Laravel app looks like this:
+
+```bash
+* * * * * cd /var/www/myapp && php artisan schedule:run >> /dev/null 2>&1
+```
+
+That `>> /dev/null 2>&1` is doing more damage than most people realize. It discards all output and all errors. If `php artisan schedule:run` throws a fatal error, you get nothing. If a task exits with a non-zero code, you get nothing. If the cron daemon itself stops running, you get nothing.
+
+Even if you log the output, `schedule:run` reports success at the process level as long as it can parse the schedule. A task that throws an exception internally still exits 0 in most cases.
+
+## The events Laravel gives you
+
+Laravel 9+ fires four events you can hook into for scheduled tasks:
+
+- `ScheduledTaskStarting` fired before a task runs
+- `ScheduledTaskFinished` fired after a task completes successfully
+- `ScheduledTaskFailed` fired when a task throws an exception
+- `ScheduledTaskSkipped` fired when a task is skipped due to conditions
+
+The most useful pair is `ScheduledTaskFinished` and `ScheduledTaskFailed`. Together they let you record every run and its outcome.
+
+Here's a basic event listener that logs task execution:
+
+```php
+<?php
+
+namespace App\Listeners;
+
+use Illuminate\Console\Events\ScheduledTaskFinished;
+use Illuminate\Console\Events\ScheduledTaskFailed;
+use Illuminate\Support\Facades\Log;
+
+class ScheduledTaskMonitor
+{
+    public function handleFinished(ScheduledTaskFinished $event): void
+    {
+        $task = $event->task;
+        $runtime = $event->runtime;
+
+        Log::channel('tasks')->info('Scheduled task completed', [
+            'command' => $task->getSummaryForDisplay(),
+            'exit_code' => $task->exitCode,
+            'duration_seconds' => round($runtime, 3),
+            'ran_at' => now()->toIso8601String(),
+        ]);
+    }
+
+    public function handleFailed(ScheduledTaskFailed $event): void
+    {
+        $task = $event->task;
+        $exception = $event->exception;
+
+        Log::channel('tasks')->error('Scheduled task failed', [
+            'command' => $task->getSummaryForDisplay(),
+            'error' => $exception->getMessage(),
+            'ran_at' => now()->toIso8601String(),
+        ]);
+
+        // Send alert
+        \Illuminate\Support\Facades\Notification::route('slack', config('services.slack.webhook'))
+            ->notify(new \App\Notifications\ScheduledTaskFailed($task, $exception));
+    }
+}
+```
+
+Register both listeners in `EventServiceProvider`:
+
+```php
+protected $listen = [
+    \Illuminate\Console\Events\ScheduledTaskFinished::class => [
+        \App\Listeners\ScheduledTaskMonitor::class . '@handleFinished',
+    ],
+    \Illuminate\Console\Events\ScheduledTaskFailed::class => [
+        \App\Listeners\ScheduledTaskMonitor::class . '@handleFailed',
+    ],
+];
+```
+
+## Recording exit codes and duration
+
+The `ScheduledTaskFinished` event gives you `$event->runtime` (float, seconds) and `$event->task->exitCode` (integer). The exit code is set for artisan commands but can be null for closures. Treat null as success and non-zero as failure.
+
+Here's a database model approach if you want queryable history:
+
+```php
+// In your listener's handleFinished method:
+
+\App\Models\TaskRun::create([
+    'command'          => $task->getSummaryForDisplay(),
+    'exit_code'        => $task->exitCode ?? 0,
+    'duration_seconds' => round($runtime, 3),
+    'ran_at'           => now(),
+    'succeeded'        => ($task->exitCode ?? 0) === 0,
+]);
+```
+
+With a table like this you can query: "did this task run in the last 5 minutes?" and alert if it didn't. That's how you catch missed runs.
+
+## Detecting missed runs
+
+Failed runs are one problem. Missed runs are another. A task could simply never fire because:
+
+- The crontab entry was removed during a deploy
+- The server's cron daemon crashed
+- The task was conditionally skipped every single time due to a bug in your `when()` clause
+
+The only way to catch missed runs is to check externally. Record when each task last ran, then alert if the gap exceeds the expected frequency.
+
+```php
+// A command you can schedule to check for missed tasks:
+
+$schedule->command('app:check-task-freshness')->everyFiveMinutes();
+```
+
+```php
+// In CheckTaskFreshness handle():
+
+$tasks = [
+    'app:send-reminders'     => 5,   // expected every 5 min
+    'app:sync-external-data' => 60,  // expected every 60 min
+];
+
+foreach ($tasks as $command => $maxAgeMinutes) {
+    $lastRun = \App\Models\TaskRun::where('command', 'like', "%{$command}%")
+        ->latest('ran_at')
+        ->first();
+
+    if (!$lastRun || $lastRun->ran_at->lt(now()->subMinutes($maxAgeMinutes + 2))) {
+        // Alert: task hasn't run recently enough
+    }
+}
+```
+
+## Crontab setup that doesn't swallow errors
+
+At minimum, redirect stderr somewhere useful:
+
+```bash
+* * * * * cd /var/www/myapp && php artisan schedule:run >> /var/log/laravel-schedule.log 2>&1
+```
+
+If you use Laravel Forge, enable the "Log Output" option on the scheduled command. That gets you stdout at least.
+
+A more robust setup uses a wrapper script that pings a dead-man's switch if `schedule:run` exits non-zero:
+
+```bash
+#!/bin/bash
+cd /var/www/myapp
+php artisan schedule:run
+EXIT_CODE=$?
+if [ $EXIT_CODE -ne 0 ]; then
+    curl -s "https://your-alert-endpoint/schedule-run-failed?code=$EXIT_CODE" > /dev/null
+fi
+```
+
+## How Crontinel automates this
+
+Wiring up event listeners and freshness checks yourself works, but it's a lot of plumbing. Crontinel's package hooks into the same `ScheduledTaskFinished` and `ScheduledTaskFailed` events automatically after install, records exit codes and durations, and handles the missed-run detection by tracking expected frequency per command.
+
+You define expected run frequency in the package config and Crontinel alerts you if a task goes missing within that window. No custom commands, no extra database tables to maintain.
+
+```bash
+composer require harunrrayhan/crontinel
+php artisan crontinel:install
+```
+
+The [features page](https://crontinel.com/features) has specifics on how missed-run windows are configured and what alert channels are supported.
+
+If you're comparing options, [crontinel.com/vs/cronitor](https://crontinel.com/vs/cronitor) covers how Crontinel's scheduled task monitoring differs from generic ping-based approaches.

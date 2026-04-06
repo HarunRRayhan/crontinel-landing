@@ -1,0 +1,187 @@
+---
+title: "Laravel Queue Depth Monitoring: Alert Before the Backlog Explodes"
+description: "Queue depth spikes silently. By the time you notice the backlog, it's already a crisis. Here's how to query depth for Redis and database drivers, set thresholds per queue, and why oldest-job age is the metric you actually want."
+date: 2026-04-06
+tags: ["laravel", "queues"]
+---
+
+Laravel queue depth monitoring is one of the most underrated pieces of production observability. Most teams add it reactively, after a deploy doubles the processing time for a critical queue and jobs back up for an hour before anyone notices.
+
+I want to cover what queue depth actually is, how to query it for both Redis and database drivers, why depth alone is a misleading metric, and how to set up alerts that fire before the backlog becomes a crisis.
+
+## What queue depth is
+
+Queue depth is the count of pending jobs waiting to be picked up by a worker. A job enters the queue when it's dispatched and leaves when a worker completes it (or when it fails and is moved to the failed jobs table).
+
+Depth spikes for a few reasons:
+
+- Workers crash or get restarted during a deploy
+- A slow job monopolizes workers and the queue backs up behind it
+- Job volume spikes faster than workers can scale
+- A dependency (database, external API) slows down, making each job take longer
+
+The spike itself is often sudden. You push a deploy, workers restart with a 10-second gap, and 200 jobs queue up. Under normal circumstances workers clear that in 30 seconds and nobody notices. But if the deploy introduced a regression that slows each job from 200ms to 4 seconds, that same 200-job backlog grows instead of shrinking.
+
+## Querying depth for Redis driver
+
+If you're using the Redis queue driver, depth is the length of the list at the queue key.
+
+```php
+use Illuminate\Support\Facades\Redis;
+
+function getQueueDepth(string $queue = 'default', string $connection = 'default'): int
+{
+    $key = 'queues:' . $queue;
+    return (int) Redis::connection($connection)->llen($key);
+}
+```
+
+For queued but delayed jobs (jobs dispatched with `->delay()`), check the sorted set:
+
+```php
+function getDelayedDepth(string $queue = 'default', string $connection = 'default'): int
+{
+    $key = 'queues:' . $queue . ':delayed';
+    return (int) Redis::connection($connection)->zcard($key);
+}
+```
+
+You can also check via the command line:
+
+```bash
+redis-cli llen queues:default
+redis-cli zcard queues:default:delayed
+```
+
+If you use Horizon, the `SupervisorRepository` and `QueueRepository` abstractions give you this data without touching Redis directly, but the raw approach works fine for custom health checks.
+
+## Querying depth for database driver
+
+For the `database` queue driver, jobs live in the `jobs` table:
+
+```php
+use Illuminate\Support\Facades\DB;
+
+function getQueueDepth(string $queue = 'default'): int
+{
+    return DB::table('jobs')
+        ->where('queue', $queue)
+        ->whereNull('reserved_at')
+        ->count();
+}
+```
+
+Jobs with a non-null `reserved_at` are currently being processed. Pending jobs have `reserved_at` null and `available_at` in the past.
+
+```php
+function getPendingDepth(string $queue = 'default'): int
+{
+    return DB::table('jobs')
+        ->where('queue', $queue)
+        ->whereNull('reserved_at')
+        ->where('available_at', '<=', now()->timestamp)
+        ->count();
+}
+```
+
+## Setting thresholds per queue
+
+Not all queues deserve the same alert threshold. A notification queue that usually sits at 0 should alert at depth 50. A batch-processing queue that normally runs at 500 should alert at 2000.
+
+Here's a simple config-driven check you can schedule every minute:
+
+```php
+// config/queue_thresholds.php
+return [
+    'default'       => 100,
+    'emails'        => 50,
+    'notifications' => 25,
+    'batch'         => 2000,
+];
+```
+
+```php
+// In a scheduled command:
+
+$thresholds = config('queue_thresholds');
+
+foreach ($thresholds as $queue => $threshold) {
+    $depth = getQueueDepth($queue);
+
+    if ($depth >= $threshold) {
+        \Illuminate\Support\Facades\Log::warning("Queue depth threshold exceeded", [
+            'queue'     => $queue,
+            'depth'     => $depth,
+            'threshold' => $threshold,
+        ]);
+
+        // Fire your notification here
+    }
+}
+```
+
+## Why oldest-job age is a better signal
+
+Depth tells you how many jobs are waiting. Oldest-job age tells you how long the worst job has been waiting. For most alerting purposes, age is the metric that actually maps to user impact.
+
+A queue depth of 500 with a max job age of 2 minutes means workers are keeping up. A queue depth of 20 with a max job age of 45 minutes means something is stuck and those 20 jobs are not moving.
+
+For Redis, get the oldest job's score from the sorted set (timestamp when it was queued):
+
+```php
+function getOldestJobAgeSeconds(string $queue = 'default', string $connection = 'default'): ?int
+{
+    $key = 'queues:' . $queue;
+
+    // Jobs are stored as a list; peek at the tail (oldest end)
+    $raw = Redis::connection($connection)->lindex($key, -1);
+
+    if (!$raw) {
+        return null;
+    }
+
+    $payload = json_decode($raw, true);
+    $pushedAt = $payload['pushedAt'] ?? null;
+
+    if (!$pushedAt) {
+        return null;
+    }
+
+    return (int) (microtime(true) - $pushedAt);
+}
+```
+
+For the database driver:
+
+```php
+function getOldestJobAgeSeconds(string $queue = 'default'): ?int
+{
+    $oldest = DB::table('jobs')
+        ->where('queue', $queue)
+        ->whereNull('reserved_at')
+        ->where('available_at', '<=', now()->timestamp)
+        ->orderBy('created_at')
+        ->value('created_at');
+
+    if (!$oldest) {
+        return null;
+    }
+
+    return now()->timestamp - $oldest;
+}
+```
+
+Alert when oldest job age exceeds your SLA. If you promise users that actions complete in under 2 minutes, alert when any queue has a job older than 90 seconds.
+
+## How Crontinel automates this
+
+Manually scheduling depth and age checks, maintaining per-queue thresholds in config files, and wiring up alert notifications is doable but it's ongoing maintenance. You'll forget to add the new `imports` queue you spun up last month, or your threshold config will drift from reality.
+
+Crontinel's package auto-discovers your configured queues, tracks depth and oldest-job age per queue, and lets you set thresholds from the dashboard without deploying code. It polls every 30 seconds and fires alerts through your configured channels (email, Slack, PagerDuty).
+
+```bash
+composer require harunrrayhan/crontinel
+php artisan crontinel:install
+```
+
+The oldest-job-age alert specifically is something I built into Crontinel because I got burned by a queue that looked fine on depth but had a single stuck job at the front holding everyone else up. See [crontinel.com/features](https://crontinel.com/features) for the full list of queue metrics it tracks.

@@ -1,0 +1,230 @@
+---
+title: "The Laravel Background Job Monitoring Checklist (What Most Teams Miss)"
+description: "A structured Laravel background job monitoring checklist covering Horizon health, queue depth, cron run history, alerting, and deployment safety. Most teams check one or two of these. Few check all five."
+date: 2026-04-06
+tags: ["laravel", "monitoring"]
+---
+
+A Laravel background job monitoring checklist sounds simple until you write one down. Most teams have informal coverage: someone glances at Horizon's dashboard occasionally, there's a Slack alert when the failed job count spikes, and deploy runbooks mention restarting Horizon. That's not monitoring. That's hoping.
+
+This checklist is organized into five sections. For each item: what to check, why it matters, and how to check it. Work through it once to establish your baseline, then automate what you can.
+
+---
+
+## Section 1: Horizon health
+
+### Is Horizon actually running?
+
+**What to check:** The `horizon:status` Redis key returns `running`, not `paused` or missing.
+
+**Why it matters:** Horizon can appear healthy in your process manager (Supervisor, Forge) while being paused. A paused Horizon keeps all supervisors alive and all worker processes running. Jobs queue up indefinitely and no alerts fire.
+
+**How to check:**
+
+```bash
+redis-cli get horizon:status
+```
+
+Expected output: `running`. Anything else is a problem.
+
+### Are supervisors active with live heartbeats?
+
+**What to check:** Each configured supervisor is present in `horizon:supervisors` and its heartbeat timestamp is recent (within the last 30 seconds).
+
+**Why it matters:** A supervisor can disappear without Horizon marking itself as failed. If a supervisor process is killed and Supervisor (the process manager) doesn't restart it, that queue segment goes dark silently.
+
+**How to check:**
+
+```bash
+redis-cli smembers horizon:supervisors
+redis-cli hgetall horizon:supervisor-name:1:supervisor
+```
+
+Look at the `pid` and `status` fields. Compare the `lastHeartbeat` timestamp to the current time.
+
+### Are workers actually processing jobs?
+
+**What to check:** Worker processes are listed under each supervisor and their throughput is non-zero over the last 60 seconds.
+
+**Why it matters:** You can have all the right processes running and still be stuck. Workers can be spinning in a crash loop, hitting memory limits and restarting before processing anything useful.
+
+**How to check:**
+
+```bash
+redis-cli keys "horizon:*:throughput"
+```
+
+If throughput keys are all zero during a period when jobs should be running, investigate worker logs.
+
+---
+
+## Section 2: Queue depth
+
+### Is the pending job count within expected bounds?
+
+**What to check:** The number of jobs waiting in each queue is not growing unboundedly. Define a threshold per queue based on normal processing rates.
+
+**Why it matters:** A growing queue means your workers can't keep up. This happens after a traffic spike, after a bad deploy that slowed down a worker, or after a dependency (database, external API) started responding slowly. The queue grows silently until it becomes a customer-visible delay.
+
+**How to check:**
+
+```bash
+redis-cli llen horizon:default
+redis-cli llen horizon:high
+redis-cli llen horizon:emails
+```
+
+For a dashboard view: `php artisan horizon:list` shows queue depths alongside worker counts.
+
+### Are failed jobs accumulating?
+
+**What to check:** The failed job count is not rising faster than it's being resolved. Check both the total count and the rate of new failures.
+
+**Why it matters:** A constant low level of failed jobs is normal. A sudden spike usually means a code regression or an external service outage. An ever-growing count with no resolution means nobody is watching.
+
+**How to check:**
+
+```bash
+php artisan queue:failed | head -20
+php artisan queue:failed --queue=emails
+```
+
+Check the `failed_jobs` table directly for pattern analysis:
+
+```sql
+SELECT exception, COUNT(*) as count
+FROM failed_jobs
+WHERE failed_at > NOW() - INTERVAL 1 HOUR
+GROUP BY exception
+ORDER BY count DESC;
+```
+
+### Are jobs retrying before hitting the failure threshold?
+
+**What to check:** Jobs that retry are not causing cascade effects on queue depth or downstream systems (for example, a payment job that retries 5 times and sends 5 emails).
+
+**Why it matters:** Retry behavior that's correct in isolation can cause severe problems at scale. A job that fires a webhook on each attempt, retries 10 times across 3 queues, and then fails is not a job problem. It's a design problem that monitoring won't fix. But monitoring will surface it.
+
+**How to check:** Look for repeated job IDs in failed jobs or high `attempts` counts in the `jobs` table.
+
+---
+
+## Section 3: Cron run history
+
+### Did each scheduled task run within its expected window?
+
+**What to check:** Every task in your `app/Console/Kernel.php` schedule ran at least once within its scheduled interval. A daily task should have a run record from within the last 24 hours. An hourly task within the last 60 minutes.
+
+**Why it matters:** `schedule:run` runs every minute, but that doesn't mean every task runs. Tasks can be conditionally skipped, blocked by the `withoutOverlapping` mutex, or simply not registered because of an environment check.
+
+**How to check:**
+
+```bash
+php artisan schedule:list
+```
+
+This shows each task and when it's next due, but not when it last ran. For last-run history, you need to instrument it yourself or use a tool that tracks it.
+
+### Did any scheduled task exit with a non-zero status?
+
+**What to check:** The `ScheduledTaskFailed` event fired for no tasks in the last run cycle.
+
+**Why it matters:** Laravel fires this event when a scheduled command exits with a non-zero code. If nobody's listening, failures are invisible.
+
+**How to check:** Add a listener if you don't have one:
+
+```php
+$schedule->command('reports:send')
+    ->daily()
+    ->onFailure(function () {
+        // send alert
+    });
+```
+
+Or globally via an event listener on `Illuminate\Console\Events\ScheduledTaskFailed`.
+
+### Is schedule:run itself running every minute?
+
+**What to check:** The system crontab entry for `schedule:run` exists and is running as the correct user.
+
+**Why it matters:** Every check in this section is pointless if the cron daemon entry is broken. A mistyped path, a wrong user, or a server reboot that reset the crontab will stop everything silently.
+
+**How to check:**
+
+```bash
+sudo crontab -u www-data -l
+```
+
+Confirm the entry exists and the path is correct. Then verify it's actually executing by tailing the cron syslog:
+
+```bash
+grep CRON /var/log/syslog | tail -20
+```
+
+---
+
+## Section 4: Alerting
+
+### Is there an alert for Horizon going down?
+
+**What to check:** Something will notify you within 5 minutes if Horizon stops running entirely.
+
+**Why it matters:** There's no alert you need more. Horizon down means all background processing is stopped. Every queue-backed feature in your application is broken.
+
+**How to check:** You need an external process that polls Horizon's health and pages you when it fails. Internal alerts (like a queue listener that sends an alert) don't work because the queue isn't running.
+
+### Is there an alert for queue depth exceeding thresholds?
+
+**What to check:** You have defined per-queue depth thresholds and alerts fire when they're breached.
+
+**Why it matters:** Queue depth is an early warning signal. By the time users notice delays, the queue has usually been backed up for 10-30 minutes.
+
+**How to check:** This requires something that polls Redis queue lengths on a schedule and compares against thresholds.
+
+### Is there an alert for missed cron tasks?
+
+**What to check:** If a scheduled task that's supposed to run hourly hasn't run in 90 minutes, someone gets notified.
+
+**Why it matters:** `ScheduledTaskFailed` only fires when a task runs and fails. It doesn't fire when a task never runs. Missed tasks are a different failure mode that requires different detection.
+
+---
+
+## Section 5: Deployment safety
+
+### Is Horizon restarted after every deploy?
+
+**What to check:** Your deploy process runs `php artisan horizon:terminate` (graceful) rather than killing Horizon directly.
+
+**Why it matters:** `horizon:terminate` tells Horizon to stop picking up new jobs and exit cleanly after current jobs finish. Killing the process directly can orphan in-progress jobs.
+
+**How to check:** Review your deploy script or Forge deploy commands:
+
+```bash
+php artisan horizon:terminate
+```
+
+Horizon's supervisor (Supervisor or Forge) should detect the exit and restart it automatically.
+
+### Are queued jobs compatible with the new code after deploy?
+
+**What to check:** Jobs serialized before the deploy can still be deserialized and executed after the deploy. Class renames, constructor signature changes, and removed properties all break this.
+
+**Why it matters:** Jobs in the queue were serialized against the old codebase. If you rename a class, remove a property, or change how dependencies are injected mid-queue, those jobs will fail on deserialization with no obvious connection to the deploy.
+
+**How to check:** This is a code review concern more than a monitoring concern. Flag any changes to queued job class names or constructor signatures in your deploy checklist.
+
+### Is the failed job backlog cleared before going to production?
+
+**What to check:** You have a policy for how failed jobs from the previous release are handled before deploying a new one.
+
+**Why it matters:** Retrying old failed jobs against new code can cause unexpected behavior. Clearing the backlog before deploy prevents noise and potential double-processing.
+
+---
+
+## If you're checking all of this manually, there's a better way
+
+Working through this checklist manually once is worthwhile. It tells you what your current coverage gaps are. But doing it manually on a recurring basis, across multiple environments, means you'll miss things.
+
+Crontinel was built specifically for this. It monitors Horizon health, tracks cron run history with per-task status, alerts on missed and failed tasks independently, and gives you a single dashboard across all your environments. The items in this checklist that require external polling or log tailing are handled automatically.
+
+If you want to run these checks without building the tooling yourself, [take a look at Crontinel](https://crontinel.com).

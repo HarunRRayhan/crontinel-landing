@@ -1,0 +1,196 @@
+---
+title: "Laravel Horizon Paused: How to Detect It Before Customers Notice"
+description: "horizon:pause sets a Redis key and stops all job processing. It's easy to forget to resume after a deploy. Here's how to check the paused state directly and automate the detection."
+date: 2026-04-06
+tags: ["laravel", "horizon"]
+---
+
+Laravel Horizon paused detection is something I wish more teams set up before they need it. The scenario plays out the same way everywhere: someone runs `php artisan horizon:pause` before a deploy, the deploy goes longer than expected, they forget to run `horizon:continue`, and jobs silently queue up for hours.
+
+The dashboard still shows Horizon as "Running." Supervisors are alive. Everything looks fine. The only sign anything is wrong is that no jobs are completing.
+
+## How horizon:pause actually works
+
+When you run `php artisan horizon:pause`, Horizon writes a value to Redis and then tells all active supervisor processes to stop picking up new jobs. The supervisors don't exit. They keep running, they keep reporting their heartbeats, but they stop dequeuing.
+
+The Redis key Horizon uses is:
+
+```
+horizon:status
+```
+
+The value is set to `paused` when paused and `running` when active. You can check it directly:
+
+```bash
+redis-cli get horizon:status
+```
+
+If the output is `paused`, Horizon is paused. If it's `running` or missing entirely, it's not.
+
+## Checking paused state from PHP
+
+Here's how to check it in code:
+
+```php
+use Illuminate\Support\Facades\Redis;
+
+function isHorizonPaused(): bool
+{
+    $status = Redis::get('horizon:status');
+    return $status === 'paused';
+}
+```
+
+You can also use Horizon's own `MasterSupervisor` class if you prefer not to touch Redis directly:
+
+```php
+use Laravel\Horizon\Contracts\MasterSupervisorRepository;
+
+function isHorizonPaused(): bool
+{
+    $repository = app(MasterSupervisorRepository::class);
+    $masters = $repository->all();
+
+    foreach ($masters as $master) {
+        if ($master->status === 'paused') {
+            return true;
+        }
+    }
+
+    return false;
+}
+```
+
+I prefer the raw Redis check for health endpoints because it has fewer dependencies and is harder to break.
+
+## The deploy scenario in detail
+
+Here's the exact sequence that bites teams:
+
+1. Pre-deploy: run `horizon:pause` to stop job processing during migration
+2. Run migrations
+3. Deploy new code
+4. Restart PHP-FPM and other services
+5. Forget to run `horizon:continue`
+6. Walk away
+
+The forgetting is easy because everything still looks fine. The Horizon dashboard is reachable. The process list shows horizon running. Redis is healthy. You'd only notice by looking at whether jobs are actually being dequeued, which no standard deployment checklist checks.
+
+A simple addition to your deploy script:
+
+```bash
+#!/bin/bash
+
+echo "Pausing Horizon..."
+php artisan horizon:pause
+
+echo "Running migrations..."
+php artisan migrate --force
+
+echo "Clearing caches..."
+php artisan config:cache
+php artisan route:cache
+php artisan view:cache
+
+echo "Resuming Horizon..."
+php artisan horizon:continue
+
+echo "Deploy complete."
+```
+
+That last `horizon:continue` is the line that gets skipped when deploys fail halfway through or when someone copies the pause step from the runbook but not the resume step.
+
+## Building a health check endpoint
+
+A quick solution is to expose a health check endpoint that returns 503 if Horizon is paused:
+
+```php
+// routes/web.php or routes/api.php
+
+Route::get('/health/horizon', function () {
+    $status = \Illuminate\Support\Facades\Redis::get('horizon:status');
+
+    if ($status === 'paused') {
+        return response()->json([
+            'status' => 'paused',
+            'message' => 'Horizon is paused. Run horizon:continue to resume.',
+        ], 503);
+    }
+
+    return response()->json(['status' => 'running'], 200);
+})->middleware('throttle:60,1');
+```
+
+Then ping that endpoint from an uptime monitor every minute. Any 503 fires an alert.
+
+The problem with this approach: it requires the web server to be responding, and it's one more endpoint to maintain. It also doesn't give you context about when Horizon was paused, for how long, or how many jobs queued up during the pause.
+
+## Why cron monitors don't catch this
+
+The standard advice is to add a heartbeat ping to a scheduled command or job. Something like: dispatch a job every five minutes that pings a URL when it completes.
+
+With Horizon paused, that job gets dispatched to the queue but never processed. The ping never fires. The monitor alerts after the full expected window expires, which is typically five to fifteen minutes after the problem started.
+
+For a production app where every job matters, that's a long detection gap. The real requirement is: alert within 60 seconds of Horizon entering the paused state, regardless of what jobs happen to be in the queue.
+
+That requires checking the Redis key directly on a polling interval, not waiting for a job to fire.
+
+## A scheduled command for paused detection
+
+Here's a standalone artisan command you can schedule every minute:
+
+```php
+<?php
+
+namespace App\Console\Commands;
+
+use Illuminate\Console\Command;
+use Illuminate\Support\Facades\Redis;
+
+class CheckHorizonPaused extends Command
+{
+    protected $signature = 'horizon:check-paused';
+    protected $description = 'Alert if Horizon is in paused state';
+
+    public function handle(): int
+    {
+        $status = Redis::get('horizon:status');
+
+        if ($status === 'paused') {
+            $this->error('Horizon is paused. Run php artisan horizon:continue to resume.');
+
+            // Alert via your preferred channel
+            \Illuminate\Support\Facades\Notification::route('slack', config('services.slack.webhook'))
+                ->notify(new \App\Notifications\HorizonPaused());
+
+            return Command::FAILURE;
+        }
+
+        $this->info('Horizon is running.');
+        return Command::SUCCESS;
+    }
+}
+```
+
+Schedule it in your `Kernel.php`:
+
+```php
+$schedule->command('horizon:check-paused')->everyMinute();
+```
+
+The catch here is the same recursive problem: this check runs via the scheduler, which runs via cron. If cron itself is broken, or if you're checking Horizon health via a job that also needs Horizon to be running, you've got circular dependencies.
+
+## How Crontinel handles paused detection
+
+Crontinel's monitoring runs outside your application's scheduler. It reads the `horizon:status` key on its own polling cycle and fires alerts the moment the key changes to `paused`, without relying on your cron or Horizon to be functioning.
+
+It also tracks how long Horizon has been paused and how many jobs accumulated during the pause window. When you resume, you get a summary of what backed up.
+
+```bash
+composer require harunrrayhan/crontinel
+php artisan crontinel:install
+```
+
+See [crontinel.com/features](https://crontinel.com/features) for the full list of Horizon states it monitors. If you're coming from Cronitor, [crontinel.com/vs/cronitor](https://crontinel.com/vs/cronitor) covers why ping-based monitors structurally cannot catch the paused state the way Crontinel does.
+
+The paused detection feature is the one I get the most thank-you messages about. It's a simple Redis key check, but nobody was doing it automatically before.

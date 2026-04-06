@@ -1,0 +1,152 @@
+---
+title: "Laravel Horizon Shows Running But Jobs Aren't Processing"
+description: "Horizon's status dashboard says everything is fine. Jobs are silently piling up. Here's why that happens and how to actually detect a dead supervisor."
+date: 2026-04-06
+tags: ["laravel", "horizon"]
+---
+
+If you've ever stared at the Horizon dashboard showing "Running" while your users are filing support tickets about things not happening, you've hit the core lie at the heart of how Horizon reports its own health.
+
+The target query I see in support threads constantly: "Laravel Horizon supervisor stopped jobs not processing." Let me explain exactly what's going on and how to catch it before customers do.
+
+## Horizon's status is not what you think
+
+Horizon is not one process. It's a master process that manages a set of supervisor groups, and each supervisor group manages a pool of worker processes. When you see "Running" in the dashboard, that means the Horizon master process is alive. It says nothing about your supervisors.
+
+Here's the structure in a typical `horizon.php` config:
+
+```php
+'environments' => [
+    'production' => [
+        'supervisor-1' => [
+            'connection' => 'redis',
+            'queue' => ['default'],
+            'balance' => 'auto',
+            'processes' => 5,
+        ],
+        'supervisor-2' => [
+            'connection' => 'redis',
+            'queue' => ['emails', 'notifications'],
+            'balance' => 'auto',
+            'processes' => 3,
+        ],
+    ],
+],
+```
+
+If `supervisor-2` crashes, `supervisor-1` keeps processing. Horizon master stays alive. The dashboard shows green. Your email queue is completely dead.
+
+I've seen this burn teams repeatedly. A deploy goes slightly wrong, a supervisor fails to restart, and nobody notices for six hours because the high-volume default queue looks healthy.
+
+## How supervisor state is stored in Redis
+
+Horizon writes its state to Redis. You can read it directly. The key you want is `horizon:supervisors`.
+
+```php
+use Laravel\Horizon\Contracts\SupervisorRepository;
+
+$repository = app(SupervisorRepository::class);
+$supervisors = $repository->all();
+
+foreach ($supervisors as $supervisor) {
+    echo $supervisor->name . ': ' . $supervisor->status . PHP_EOL;
+    // supervisor-1: running
+    // supervisor-2: paused  <-- or missing entirely
+}
+```
+
+If a supervisor crashes hard, it disappears from this list entirely rather than showing as "stopped." That's what makes it tricky: absence of data is the signal, not a status flag.
+
+You can also check via raw Redis if you want to be explicit:
+
+```bash
+redis-cli hgetall horizon:supervisors
+```
+
+Each supervisor has a heartbeat timestamp. If the heartbeat is stale by more than 30 seconds, the supervisor is effectively dead even if the key still exists.
+
+## Why ping monitors miss this completely
+
+A typical cron monitor setup looks like this: you ping a URL at the end of a job, and if the URL isn't pinged within the expected window, you get an alert.
+
+The problem is structural. The ping monitor knows nothing about who is doing the work. If supervisor-2 is dead, jobs queued to `emails` never get picked up. No job runs, so no ping fires, but the monitor will only alert you after the full expected window has elapsed: often an hour or more.
+
+Worse, if you have any jobs on the `default` queue that do ping, those pings keep arriving. Your monitor shows green. You have no idea that half your workers are gone.
+
+## Checking supervisor state in code
+
+Here's a simple artisan command you can run as a scheduled health check:
+
+```php
+<?php
+
+namespace App\Console\Commands;
+
+use Illuminate\Console\Command;
+use Laravel\Horizon\Contracts\SupervisorRepository;
+
+class CheckHorizonSupervisors extends Command
+{
+    protected $signature = 'horizon:check-supervisors';
+    protected $description = 'Alert if any Horizon supervisor is not running';
+
+    public function handle(SupervisorRepository $repository): int
+    {
+        $supervisors = $repository->all();
+
+        if (empty($supervisors)) {
+            $this->error('No supervisors found. Horizon may not be running.');
+            return Command::FAILURE;
+        }
+
+        $dead = [];
+
+        foreach ($supervisors as $supervisor) {
+            $stale = now()->diffInSeconds(
+                \Carbon\Carbon::createFromTimestamp($supervisor->updatedAt)
+            ) > 60;
+
+            if ($supervisor->status !== 'running' || $stale) {
+                $dead[] = $supervisor->name;
+            }
+        }
+
+        if (!empty($dead)) {
+            $this->error('Dead supervisors: ' . implode(', ', $dead));
+            return Command::FAILURE;
+        }
+
+        $this->info('All supervisors running.');
+        return Command::SUCCESS;
+    }
+}
+```
+
+Schedule it every minute in your `Kernel.php`:
+
+```php
+$schedule->command('horizon:check-supervisors')
+    ->everyMinute()
+    ->onFailure(function () {
+        // Send alert via Slack, PagerDuty, etc.
+        \Illuminate\Support\Facades\Notification::route('slack', env('SLACK_WEBHOOK'))
+            ->notify(new \App\Notifications\HorizonSupervisorDown());
+    });
+```
+
+## What Crontinel does differently
+
+The problem with the DIY approach above is that it requires your scheduled task runner to be working correctly in order to check your queue worker. It's turtles all the way down.
+
+Crontinel's package runs the supervisor check as part of its own monitoring loop, which pushes state to a separate reporting endpoint rather than relying on the scheduler to fire. It reads the same Redis keys Horizon uses, tracks per-supervisor health, and alerts you when a supervisor disappears from the heartbeat map.
+
+You get per-supervisor status in the Crontinel dashboard, not just a binary "is Horizon running" flag. See [crontinel.com/features](https://crontinel.com/features) for the full breakdown.
+
+```bash
+composer require harunrrayhan/crontinel
+php artisan crontinel:install
+```
+
+The install command walks you through connecting your Redis and wiring up alerts. Most setups are done in under five minutes.
+
+The supervisor check alone has saved several teams I know from multi-hour outages where Horizon looked healthy while a whole class of jobs silently backed up.
