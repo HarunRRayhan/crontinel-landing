@@ -1,0 +1,98 @@
+---
+title: "PagerDuty + Laravel: Auto-Creating Incidents from Queue and Cron Alerts"
+description: "Wire Laravel queue depth alerts and cron failures directly into PagerDuty using Events API v2. Dedup keys keep fire and resolve events linked to one incident so oncall doesn't get spammed."
+date: 2026-04-07
+tags: ["laravel", "pagerduty", "alerting"]
+---
+
+Most Laravel monitoring setups stop at Slack. That works until your team grows past two people, you have an oncall rotation, and a midnight Slack message gets buried under 40 unread threads.
+
+PagerDuty solves this by waking up the right person. The missing piece is getting your Laravel-specific signals (queue depth, Horizon state, cron exit codes) into PagerDuty without building a custom integration from scratch.
+
+## The problem with generic monitoring + PagerDuty
+
+If you're using Datadog or New Relic, you can create PagerDuty alerts based on APM metrics. But APM tools don't know about:
+
+- Horizon supervisor pause state (it's a Redis key, not an HTTP metric)
+- Per-queue depth thresholds (the `default` queue at 50 jobs is fine; the `invoices` queue at 50 is a crisis)
+- Cron exit codes (a command that ran but returned exit code 1 looks identical to a healthy run in most APM dashboards)
+
+You need something that reads Laravel internals and speaks PagerDuty's Events API.
+
+## Events API v2: the right integration type
+
+PagerDuty has two ingestion paths: the REST API (for CRUD operations on incidents) and the Events API (for machine-generated signals). For monitoring, you want Events API v2.
+
+The key concepts:
+
+- **Routing key**: ties events to a specific PagerDuty service
+- **Event action**: `trigger` to create an incident, `resolve` to close it
+- **Dedup key**: a stable string that links multiple events to the same incident
+
+The dedup key is the important part. If your queue depth exceeds the threshold five times before someone acknowledges, you want one incident with five trigger events, not five separate incidents.
+
+## What the payload looks like
+
+```php
+Http::post('https://events.pagerduty.com/v2/enqueue', [
+    'routing_key'  => $routingKey,
+    'event_action' => 'trigger', // or 'resolve'
+    'dedup_key'    => "crontinel:{$appId}:queue:default:depth",
+    'payload'      => [
+        'summary'  => "Queue 'default' depth is 1500 (threshold: 1000)",
+        'severity' => 'error',
+        'source'   => 'crontinel',
+        'custom_details' => [
+            'app'       => $appName,
+            'alert_key' => 'queue:default:depth',
+            'state'     => 'firing',
+        ],
+    ],
+]);
+```
+
+When the condition clears, send the same request with `event_action: 'resolve'` and the same `dedup_key`. PagerDuty closes the incident automatically.
+
+## Dedup key design
+
+A good dedup key is:
+
+1. **Stable across evaluations** (same condition = same key every time)
+2. **Unique per condition** (queue depth on `default` is a different incident than queue depth on `invoices`)
+3. **Scoped to your app** (if you run multiple Laravel apps, include the app ID)
+
+The pattern `crontinel:{app_id}:{alert_key}` covers all three. The alert key itself encodes the monitor type and target: `queue:default:depth`, `horizon:paused`, `cron:send-invoices:failed`.
+
+## Auto-resolution matters
+
+Most PagerDuty integrations only trigger. They never resolve. This means:
+
+- Oncall has to manually close every incident
+- You lose the "time to resolution" metric
+- Repeated triggers create duplicate incidents instead of updating the existing one
+
+With proper `trigger` + `resolve` events on the same dedup key, PagerDuty shows the full incident lifecycle: when it fired, when it resolved, how long it lasted.
+
+## Setting this up with Crontinel
+
+If you're using the Crontinel SaaS, add a PagerDuty alert channel in the dashboard with your Events API v2 routing key. Crontinel handles the trigger/resolve lifecycle and dedup key generation automatically.
+
+If you're using the OSS package standalone, configure the alert channel in your `.env`:
+
+```ini
+CRONTINEL_ALERT_CHANNEL=pagerduty
+CRONTINEL_PAGERDUTY_ROUTING_KEY=your-events-api-v2-key
+```
+
+Every condition that fires (Horizon paused, queue depth exceeded, cron failed) creates a PagerDuty incident. When the condition clears on the next evaluation cycle, the incident resolves.
+
+## When to use PagerDuty vs Slack
+
+- **Slack**: development environments, non-critical queues, team visibility
+- **PagerDuty**: production, revenue-critical jobs (billing, invoicing), anything with an oncall rotation
+
+You can configure both. Use Slack as the default channel for awareness, and add PagerDuty as a second channel scoped to your production app.
+
+## Summary
+
+PagerDuty integration for Laravel monitoring needs three things: Events API v2, stable dedup keys, and automatic resolution. Without all three, you get alert spam and manual incident management. With them, your oncall gets paged once, sees the full timeline, and the incident closes itself when the queue drains or Horizon resumes.

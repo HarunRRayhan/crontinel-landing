@@ -20,16 +20,16 @@ const integrations = [
   },
   {
     name: 'Webhook',
-    status: 'coming-soon',
-    description: 'Fire a POST to any URL when an alert triggers. Route to PagerDuty, Opsgenie, or your own handler.',
-    config: null,
+    status: 'available',
+    description: 'Fire a POST to any HTTPS endpoint when an alert triggers or resolves. Route to Opsgenie, Betterstack, or your own handler.',
+    config: 'CRONTINEL_WEBHOOK_URL',
     icon: '⚡',
   },
   {
     name: 'PagerDuty',
-    status: 'coming-soon',
-    description: 'Create incidents in PagerDuty directly from Crontinel alerts with full event payload.',
-    config: null,
+    status: 'available',
+    description: 'Create and auto-resolve PagerDuty incidents via Events API v2. Dedup keys keep fire/resolve events linked to a single incident.',
+    config: 'CRONTINEL_PAGERDUTY_ROUTING_KEY',
     icon: '🔔',
   },
 ];
@@ -75,7 +75,7 @@ const integrations = [
       <div class="space-y-3 font-mono text-sm">
         <div class="flex gap-4 text-gray-400">
           <code class="text-green-400 min-w-[220px]">CRONTINEL_ALERT_CHANNEL</code>
-          <span>slack | mail | null (default: null)</span>
+          <span>slack | mail | webhook | pagerduty | null</span>
         </div>
         <div class="flex gap-4 text-gray-400">
           <code class="text-green-400 min-w-[220px]">CRONTINEL_SLACK_WEBHOOK</code>
@@ -84,6 +84,14 @@ const integrations = [
         <div class="flex gap-4 text-gray-400">
           <code class="text-green-400 min-w-[220px]">CRONTINEL_ALERT_EMAIL</code>
           <span>Email address to notify</span>
+        </div>
+        <div class="flex gap-4 text-gray-400">
+          <code class="text-green-400 min-w-[220px]">CRONTINEL_WEBHOOK_URL</code>
+          <span>HTTPS endpoint for alert POSTs</span>
+        </div>
+        <div class="flex gap-4 text-gray-400">
+          <code class="text-green-400 min-w-[220px]">CRONTINEL_PAGERDUTY_ROUTING_KEY</code>
+          <span>Events API v2 integration key</span>
         </div>
       </div>
     </div>
