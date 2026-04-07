@@ -1,0 +1,110 @@
+---
+title: "Crontinel PagerDuty Integration: Laravel Monitoring Incidents"
+description: "Create and auto-resolve PagerDuty incidents from Crontinel. Use Events API v2 with dedup keys to get one incident per failure, not a flood of alerts."
+date: 2026-04-07
+---
+
+Crontinel's PagerDuty integration uses Events API v2 to create incidents when alerts fire and resolve them automatically when the condition clears. Dedup keys keep fire and resolve events linked to a single incident, so a queue depth spike that lasts 10 minutes creates one incident, not 20.
+
+## When to use PagerDuty integration
+
+PagerDuty is the right alert channel for:
+
+- Production billing and revenue-critical jobs that need immediate human response
+- On-call teams with escalation policies and rotation schedules
+- Incidents that need to be tracked through resolution and post-mortemed
+
+For lower-urgency notifications, Slack or email is more appropriate. Crontinel lets you configure different alert channels per app, so you can route production billing alerts to PagerDuty and staging alerts to Slack.
+
+## Setup
+
+### 1. Create a PagerDuty Events API v2 integration
+
+In PagerDuty, navigate to your service and add a new integration. Select "Events API v2" as the integration type. PagerDuty will generate a routing key (also called an integration key).
+
+Copy the routing key, which looks like:
+
+```
+r07xxxxxxxxxxxxxxxxxxxxxxxxxx
+```
+
+### 2. Configure your `.env`
+
+```bash
+CRONTINEL_ALERT_CHANNEL=pagerduty
+CRONTINEL_PAGERDUTY_ROUTING_KEY=r07xxxxxxxxxxxxxxxxxxxxxxxxxx
+```
+
+### 3. Test the integration
+
+```bash
+php artisan crontinel:test-alert
+```
+
+This fires a test trigger event to PagerDuty. Verify it creates an incident in your service. Then run the resolve variant:
+
+```bash
+php artisan crontinel:test-alert --resolve
+```
+
+Verify the test incident resolves automatically.
+
+## How dedup keys work
+
+Every Crontinel alert has a dedup key based on the alert type and the affected component. For example, a paused Horizon supervisor generates a dedup key like `crontinel:supervisor:default:paused`.
+
+When the alert fires, PagerDuty receives a `trigger` event with this dedup key and creates an incident. If the same alert fires again before the condition resolves (because the supervisor is still paused), PagerDuty receives another `trigger` with the same dedup key and doesn't create a duplicate incident.
+
+When the supervisor resumes, Crontinel sends a `resolve` event with the same dedup key. PagerDuty closes the incident automatically.
+
+This means:
+- One incident per failure, regardless of how many polling cycles fire
+- Automatic resolution without manual intervention
+- Clean incident timeline in PagerDuty with precise start and end times
+
+## Alert types and severity
+
+Crontinel maps alert types to PagerDuty severities:
+
+| Alert | PagerDuty severity |
+|---|---|
+| Horizon supervisor stopped | critical |
+| Horizon supervisor paused | error |
+| Scheduled task missed (no recent run) | critical |
+| Scheduled task failed | error |
+| Queue depth threshold exceeded | warning |
+| Oldest job age exceeded | warning |
+| Failed job rate spike | error |
+| Scheduled task late | warning |
+
+PagerDuty uses severity to determine notification urgency. Critical alerts wake people up. Warning-level alerts notify but don't escalate unless they persist.
+
+## PagerDuty incident details
+
+Each incident created by Crontinel includes:
+
+- Alert summary with app name and specific condition
+- Custom details block with queue depth, supervisor name, or task output (depending on alert type)
+- Links back to the Crontinel dashboard for the affected app
+- Timestamp of when the condition was first detected
+
+## Multi-service routing
+
+If your PagerDuty account routes different severity classes to different services (a "P1" service with immediate escalation and a "P2" service with business-hours escalation), you can configure different routing keys for different Crontinel apps.
+
+For a single app, configure the routing key that corresponds to the urgency level appropriate for that app's background jobs. A development environment app might route to a low-urgency service or not use PagerDuty at all.
+
+## Escalation policies
+
+Crontinel creates incidents but does not manage escalation policies. Configure escalation in PagerDuty directly: who gets notified first, how long to wait before escalating, and who is on the escalation chain. Crontinel incidents appear in PagerDuty like any other incident and follow your existing policies.
+
+## Troubleshooting
+
+If alerts aren't creating PagerDuty incidents:
+
+1. Verify the routing key is correct (the 32-character key, not your PagerDuty account ID)
+2. Check that the Events API v2 integration is enabled on the target service
+3. Run `php artisan crontinel:test-alert` and check Laravel's log for the HTTP response from PagerDuty's `events.pagerduty.com` endpoint
+4. Confirm outbound HTTPS from your server to `events.pagerduty.com` is not blocked
+
+PagerDuty's Events API returns `202 Accepted` for successfully received events. Any other response code indicates a configuration or network issue.

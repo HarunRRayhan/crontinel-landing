@@ -1,0 +1,96 @@
+---
+title: "Crontinel vs Dead Man's Snitch: Cron Alerting vs Full Laravel Monitoring"
+description: "Dead Man's Snitch watches for cron pings. Crontinel watches your entire Laravel background job layer: Horizon supervisors, queue depth, failed jobs, and scheduled tasks."
+competitor: "Dead Man's Snitch"
+date: 2026-04-07
+---
+
+Dead Man's Snitch is a cron monitoring service built around a simple premise: if your job doesn't check in, something is wrong. You add a curl call to your cron job, and if the ping doesn't arrive within the expected interval, Dead Man's Snitch sends you an alert.
+
+For pure cron monitoring, it's a clean, reliable tool. For Laravel apps with Horizon, it leaves most of the failure surface uncovered.
+
+## How Dead Man's Snitch works
+
+The setup is straightforward. You create a snitch, select an interval (hourly, daily, etc.), and add the ping URL to your cron job:
+
+```bash
+*/5 * * * * php artisan process:queue && curl https://nosnch.in/your-snitch-id
+```
+
+If the curl doesn't fire within 1.5x the configured interval, Dead Man's Snitch sends an alert to your configured channels.
+
+It does exactly this. Nothing more.
+
+## What it doesn't cover
+
+Dead Man's Snitch has no application awareness. It knows a cron job ran. It doesn't know:
+
+- Whether your Horizon workers are running
+- Whether a supervisor is paused or has stopped
+- How many jobs are in each queue right now
+- Whether jobs are failing at an unusual rate
+- How long the oldest job has been waiting
+
+For a Laravel app that processes payments, sends notifications, or syncs external data, these signals matter more than the cron ping. A cron job can ping successfully and Horizon can still be paused, with queued jobs backed up and no alert fired.
+
+## The ping model and its limits
+
+Any ping-based monitoring has a structural limitation: it can only tell you a job ran. It can't tell you a job is stuck, a queue is overwhelmed, or a downstream dependency is failing.
+
+Dead Man's Snitch also requires you to add pings to every job you want monitored. New commands need new snitches. Teams maintaining many scheduled tasks end up with a growing list of snitches to configure, and any unconfigured command has no monitoring at all.
+
+Crontinel hooks into Laravel's scheduler events automatically. Every `schedule:run` invocation is recorded with its exit code and duration. No curl calls to add, no per-job configuration beyond the initial install.
+
+## Pricing
+
+Dead Man's Snitch charges per snitch. The free tier covers a single snitch. Paid plans start around $17/month for 20 snitches and go up from there.
+
+Crontinel pricing:
+- Free: 1 app, 7 days of history, all alert channels
+- Pro: $19/month, 5 apps, 90 days of history
+- Team: $49/month, unlimited apps, team members
+
+If you have 20+ scheduled tasks, per-snitch pricing adds up. Crontinel monitors all tasks in an app under a single flat rate.
+
+## Feature comparison
+
+| Capability | Crontinel | Dead Man's Snitch |
+|---|---|---|
+| Horizon supervisor status | Yes | No |
+| Horizon paused detection | Yes | No |
+| Queue depth per queue | Yes | No |
+| Oldest job age | Yes | No |
+| Failed jobs per minute | Yes | No |
+| Scheduled task run history | Yes | Yes (ping-based) |
+| Dead-man ping monitoring | No | Yes |
+| Automatic task recording | Yes | No |
+| Slack alerts | Yes | Yes |
+| Email alerts | Yes | Yes |
+| PagerDuty | Yes | Yes |
+| Webhook | Yes | Yes |
+| Open source / self-hostable | Yes | No |
+
+## When Dead Man's Snitch is the right choice
+
+Dead Man's Snitch is a good fit when:
+- You run simple shell cron jobs outside of Laravel
+- Dead-man alerting is your entire monitoring need
+- You want the simplest possible setup with no package to install
+- You're monitoring a small number of tasks
+
+## When Crontinel fits better
+
+Crontinel fits better when:
+- You run Laravel Horizon in production
+- You need queue-level visibility, not just cron pings
+- You want monitoring that covers all scheduled tasks automatically
+- You want Horizon and cron monitoring in a single tool
+
+## Installation
+
+```bash
+composer require harunrrayhan/crontinel
+php artisan crontinel:install
+```
+
+No pings to add. No per-task configuration. All scheduled tasks are recorded from the first `schedule:run`, and Horizon monitoring activates automatically when Horizon is detected.

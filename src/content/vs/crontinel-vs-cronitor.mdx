@@ -1,0 +1,96 @@
+---
+title: "Crontinel vs Cronitor: Laravel Cron and Queue Monitoring"
+description: "Cronitor watches for a ping. Crontinel reads your app's internals. Here's what that difference means when Horizon silently pauses and your jobs stop running."
+competitor: "Cronitor"
+date: 2026-04-07
+---
+
+Cronitor is a well-established cron monitoring service used by thousands of teams. It works by wrapping jobs in ping-in and ping-out HTTP calls. If the expected ping doesn't arrive within a grace period, Cronitor fires an alert.
+
+That model works fine for generic cron jobs. For Laravel apps running Horizon, it has a meaningful blind spot.
+
+## What Cronitor monitors
+
+Cronitor's core capability is heartbeat monitoring. You add a monitor to their dashboard, wrap your job with start/finish pings (or use their SDK), and Cronitor tells you if the ping didn't arrive in time.
+
+This works well when:
+- Your jobs are shell scripts or simple cron commands
+- You want dead-man alerting for periodic tasks
+- You don't need visibility into queue internals
+
+Cronitor also offers a scheduling interface where you can define the expected schedule and get alerted if a job runs late or not at all.
+
+## Where Cronitor falls short for Laravel apps
+
+### Horizon supervisor state
+
+Cronitor has no visibility into Laravel Horizon. When a Horizon supervisor pauses (due to a deployment signal, a Redis connection problem, or a failed health check), Cronitor doesn't know. It only knows a ping didn't arrive.
+
+That matters because the gap between "Horizon paused" and "Cronitor alert" can be 5 to 15 minutes depending on your grace period settings. During that window, your queued jobs are silently backing up.
+
+### Queue depth and oldest job age
+
+Cronitor doesn't monitor queue depth. If your `invoices` queue has 2,000 jobs piled up because a downstream API is throttling, Cronitor sees nothing until jobs start missing their scheduled windows.
+
+Crontinel reads Redis directly to report queue depth and oldest job age for every queue. You can alert when `invoices` depth exceeds 50, before customers notice delayed invoices.
+
+### No code wrapping required
+
+Cronitor requires you to add pings to your job code. That means:
+- Every new scheduled task needs instrumentation
+- Missed instrumentation means no monitoring
+- Wrapping code adds complexity and potential failure points
+
+Crontinel hooks into Laravel's scheduler events automatically. Install the package, run `php artisan crontinel:install`, and every scheduled task is recorded with no per-task code changes.
+
+## Feature comparison
+
+| Capability | Crontinel | Cronitor |
+|---|---|---|
+| Horizon supervisor status | Yes | No |
+| Horizon paused detection | Yes | No |
+| Queue depth per queue | Yes | No |
+| Oldest job age alert | Yes | No |
+| Failed jobs per minute | Yes | No |
+| Cron run history (exit code, duration) | Yes | Yes |
+| Dead-man ping monitoring | No | Yes |
+| No code wrapping needed | Yes | No |
+| Open source / self-hostable | Yes | No |
+| Slack alerts | Yes | Yes |
+| Email alerts | Yes | Yes |
+| PagerDuty integration | Yes | Yes |
+| Webhook support | Yes | Yes |
+
+## Pricing comparison
+
+Cronitor's pricing starts at $19/month for a basic tier and scales up to $99/month and beyond for larger team plans. Their free tier is limited to a small number of monitors.
+
+Crontinel is free for a single app with 7 days of history. Pro is $19/month for up to 5 apps with 90 days of history, and Team is $49/month for unlimited apps and team access.
+
+The OSS package is MIT-licensed and can be self-hosted with no SaaS dependency at all.
+
+## When Cronitor is the right choice
+
+Cronitor makes sense if:
+- Your stack is not Laravel (it supports any language or platform)
+- You want dead-man ping monitoring as the primary use case
+- Your jobs are shell scripts, not queued Laravel jobs
+
+## When Crontinel is the right choice
+
+Crontinel fits better when:
+- You run Laravel Horizon in production
+- You need queue depth and supervisor state visibility
+- You want zero-instrumentation monitoring (no pings to add)
+- You want an affordable or self-hosted option
+
+## Getting started
+
+Install the Crontinel OSS package in two commands:
+
+```bash
+composer require harunrrayhan/crontinel
+php artisan crontinel:install
+```
+
+The package starts recording scheduler runs immediately. Connect to the SaaS dashboard to get alerts and history, or keep it local for self-hosted use.

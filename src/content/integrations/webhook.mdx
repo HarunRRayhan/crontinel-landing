@@ -1,0 +1,141 @@
+---
+title: "Crontinel Webhook Integration: Route Alerts to Any Endpoint"
+description: "Send Crontinel alerts to any HTTPS endpoint via webhook. Build custom alert routing, connect to Opsgenie, or handle alerts in your own infrastructure."
+date: 2026-04-07
+---
+
+Crontinel's webhook integration fires a POST request to a configured HTTPS endpoint when an alert triggers or resolves. The payload is a JSON object with all alert details. This lets you route alerts to any system that accepts HTTP: custom handlers, Opsgenie, incident.io, your own alerting infrastructure, or a logging aggregator.
+
+## Setup
+
+Configure the webhook URL in your `.env`:
+
+```bash
+CRONTINEL_ALERT_CHANNEL=webhook
+CRONTINEL_WEBHOOK_URL=https://your-endpoint.example.com/crontinel
+```
+
+Test the integration:
+
+```bash
+php artisan crontinel:test-alert
+```
+
+This sends a test payload to your endpoint. Verify receipt on your end and confirm Crontinel logs a successful response.
+
+## Payload format
+
+Every webhook POST uses `Content-Type: application/json`. The payload structure:
+
+```json
+{
+  "event": "alert.triggered",
+  "alert_type": "horizon_supervisor_paused",
+  "severity": "error",
+  "app": {
+    "name": "Production API",
+    "id": "app_xxxxxxxxxxxx"
+  },
+  "details": {
+    "supervisor": "default",
+    "status": "paused",
+    "detected_at": "2026-04-07T02:14:33Z"
+  },
+  "queues": {
+    "invoices": {
+      "depth": 847,
+      "oldest_job_age_minutes": 12
+    }
+  },
+  "dashboard_url": "https://app.crontinel.com/apps/app_xxxxxxxxxxxx",
+  "timestamp": "2026-04-07T02:14:34Z"
+}
+```
+
+For resolved events:
+
+```json
+{
+  "event": "alert.resolved",
+  "alert_type": "horizon_supervisor_paused",
+  "app": {
+    "name": "Production API",
+    "id": "app_xxxxxxxxxxxx"
+  },
+  "resolved_at": "2026-04-07T02:19:11Z",
+  "duration_seconds": 278
+}
+```
+
+## Alert types in webhook payloads
+
+The `alert_type` field identifies what triggered the alert:
+
+| alert_type | Triggered when |
+|---|---|
+| `horizon_supervisor_paused` | A Horizon supervisor enters paused state |
+| `horizon_supervisor_stopped` | A Horizon supervisor stops entirely |
+| `queue_depth_exceeded` | Queue pending job count exceeds threshold |
+| `oldest_job_age_exceeded` | Oldest pending job age exceeds threshold |
+| `failed_jobs_rate_exceeded` | Failed jobs per minute above threshold |
+| `scheduled_task_failed` | Scheduled command exited with non-zero code |
+| `scheduled_task_late` | Scheduled command didn't run within expected window |
+| `scheduled_task_missed` | No scheduler heartbeat recorded for extended period |
+
+## Common webhook use cases
+
+### Routing to Opsgenie
+
+Opsgenie accepts alert creation via its REST API. Build a small handler that receives Crontinel's webhook, maps `alert_type` to an Opsgenie priority, and posts to `https://api.opsgenie.com/v2/alerts`.
+
+### Routing to incident.io
+
+incident.io accepts inbound webhooks to create alerts. Map Crontinel's payload fields to incident.io's expected format in your handler.
+
+### Slack with custom formatting
+
+If you want more control over Slack message formatting than Crontinel's default Slack integration provides, use webhook integration to receive the raw payload and format it yourself before posting to Slack's API.
+
+### Fan-out to multiple destinations
+
+A webhook handler lets you send a single Crontinel alert to multiple destinations simultaneously: create a PagerDuty incident, post to Slack, and log to your incident database, all from one alert.
+
+### Custom escalation logic
+
+Your handler can implement custom escalation logic that Crontinel doesn't support natively. For example: send to Slack during business hours, create a PagerDuty incident outside business hours, and only escalate if the same alert fires twice within 10 minutes.
+
+## Webhook security
+
+Crontinel signs webhook requests with an HMAC-SHA256 signature. The signature is included in the `X-Crontinel-Signature` header:
+
+```
+X-Crontinel-Signature: sha256=abc123...
+```
+
+Verify the signature in your handler to confirm the request came from Crontinel and hasn't been tampered with. The signing key is available in your Crontinel dashboard under app settings.
+
+Example verification in PHP:
+
+```php
+$payload = file_get_contents('php://input');
+$signature = $_SERVER['HTTP_X_CRONTINEL_SIGNATURE'] ?? '';
+$expected = 'sha256=' . hash_hmac('sha256', $payload, $signingKey);
+
+if (!hash_equals($expected, $signature)) {
+    http_response_code(401);
+    exit;
+}
+```
+
+## Retry behavior
+
+Crontinel retries failed webhook deliveries up to 3 times with exponential backoff. If all retries fail, the alert is logged locally and a failure note is added to your dashboard. Your endpoint should return a 2xx status code within 5 seconds to be considered successful.
+
+## Endpoint requirements
+
+- Must accept HTTPS (HTTP endpoints are not supported)
+- Must respond within 5 seconds
+- Should return 200-299 for successful receipt
+- Must be publicly accessible from Crontinel's infrastructure
+
+If your endpoint is internal (behind a VPN or firewall), use Crontinel's Slack or PagerDuty integration instead, as webhook delivery requires your server to be reachable from Crontinel's infrastructure.

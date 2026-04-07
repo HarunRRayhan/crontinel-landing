@@ -1,0 +1,98 @@
+---
+title: "Production Cron Job Alerting for Laravel: Get Notified When Schedules Break"
+description: "Set up reliable cron job alerting for Laravel production apps. Know immediately when a scheduled task fails, runs late, or stops running entirely."
+date: 2026-04-07
+---
+
+Running cron jobs in production without alerting is a trust exercise. You trust the cron daemon kept running. You trust the working directory path is still correct. You trust the scheduled task exited cleanly. You trust someone will notice if any of that stops being true.
+
+Most of the time, that trust holds. When it breaks, you find out from a user.
+
+This page covers what production cron job alerting requires and how Crontinel provides it for Laravel applications.
+
+## Three failure modes that need separate alerting
+
+### 1. Task failure (non-zero exit code)
+
+The most common and most detectable failure mode. Your command throws an exception, handles it poorly, and exits with a non-zero status. Laravel fires `ScheduledTaskFailed`. Crontinel captures the exit code, the command output, and fires an alert.
+
+This is the failure mode most teams already have some coverage for, often through a `ScheduledTaskFailed` listener that logs to Slack. Crontinel gives you that plus a historical record of every run.
+
+### 2. Late run (task ran, but not when expected)
+
+A command that runs every 5 minutes should have a recorded run within the last 7-8 minutes. If it's been 12 minutes, the task is late. This could mean the cron daemon skipped a tick (common on servers under load), the task took longer than its interval, or the server was briefly unavailable.
+
+Crontinel compares the last recorded run time against the expected schedule and alerts when a task is overdue. The threshold is configurable: a daily report that runs a few minutes late doesn't need a page, but a 5-minute billing processor that's 10 minutes late does.
+
+### 3. Missed run (task stopped running entirely)
+
+The most severe and most invisible failure mode. The cron daemon is not running. The crontab was removed. The server rebooted and the cron service didn't restart. `php artisan schedule:run` hasn't fired in 45 minutes.
+
+Nothing in Laravel fires for this. No `ScheduledTaskFailed`, no log entry, nothing. Crontinel detects it by checking whether the most recent `schedule:run` heartbeat arrived within the expected window.
+
+## Configuring alerts per severity
+
+Not every alert needs the same urgency. A staging environment cron failure should not page someone at 3am. A billing job that stopped running at midnight should.
+
+Configure Crontinel alert channels based on the severity:
+
+```bash
+# Critical alerts: PagerDuty
+CRONTINEL_ALERT_CHANNEL=pagerduty
+CRONTINEL_PAGERDUTY_ROUTING_KEY=your-routing-key
+
+# Or use Slack for lower-severity environments
+CRONTINEL_ALERT_CHANNEL=slack
+CRONTINEL_SLACK_WEBHOOK=https://hooks.slack.com/services/...
+```
+
+On the Team plan, you can configure per-app alert channels. Your staging app posts to a low-urgency Slack channel. Your production app pages through PagerDuty.
+
+## Alert contents
+
+A Crontinel cron failure alert includes:
+
+- Task name and schedule expression
+- Failure type (failed, late, or missed)
+- Last recorded run time
+- Exit code and output (for failed runs)
+- Link to the full run history in the dashboard
+
+This gives whoever receives the alert enough context to start debugging without needing to SSH into the server first.
+
+## Reducing false positives
+
+Crontinel includes a grace period for late-run detection. A task that runs every minute and is 30 seconds late doesn't fire an alert. The grace period defaults to 1.5x the task's interval and is configurable.
+
+Tasks that run on a schedule with natural variance (long-running tasks that sometimes take 3 minutes, sometimes 8) can have wider grace periods configured explicitly.
+
+## Alert fatigue and alert grouping
+
+If 10 scheduled tasks all fail at once (because the database is down), you don't want 10 separate alerts. Crontinel groups related failures into a single alert when multiple tasks fail within the same polling window.
+
+PagerDuty dedup keys ensure a single incident per failure class, not a new PagerDuty incident per task per minute.
+
+## Testing your alerting setup
+
+Before relying on Crontinel alerts in production, test the full alert path:
+
+```bash
+# Verify Crontinel is recording runs
+php artisan crontinel:check
+
+# Test the alert channel configuration
+php artisan crontinel:test-alert
+```
+
+The `crontinel:test-alert` command fires a test alert through your configured channel so you can verify delivery before a real incident.
+
+## Installation
+
+```bash
+composer require harunrrayhan/crontinel
+php artisan crontinel:install
+php artisan vendor:publish --tag=crontinel-migrations
+php artisan migrate
+```
+
+Configure your alert channel and connect to the dashboard. The free tier covers one app with all alert channels available, so you can validate the full setup before committing to a paid plan.

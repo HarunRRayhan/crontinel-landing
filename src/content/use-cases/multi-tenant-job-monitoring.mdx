@@ -1,0 +1,96 @@
+---
+title: "Multi-Tenant Job Monitoring for Laravel: One Dashboard for All Your Apps"
+description: "Monitor background jobs across multiple Laravel applications from a single dashboard. Separate API keys, per-app thresholds, and team access for multi-app Laravel teams."
+date: 2026-04-07
+---
+
+Teams running more than one Laravel application face a monitoring coordination problem. Each app has its own Horizon instance, its own scheduler, its own queues. Monitoring them requires either juggling multiple dashboards or accepting gaps in visibility.
+
+Crontinel's multi-app architecture is designed for this. Each application connects independently with its own API key, and all apps are visible in a shared dashboard.
+
+## How multi-app monitoring works
+
+Each Laravel app installs the Crontinel OSS package and registers with the SaaS dashboard using an app-specific API key:
+
+```bash
+CRONTINEL_API_KEY=ct_app_xxxxxxxxxxxx
+CRONTINEL_APP_NAME="Production API"
+```
+
+The package sends monitoring data (scheduler events, Horizon state, queue metrics) to the Crontinel backend. Each app's data is scoped to its API key and displayed separately in the dashboard.
+
+You can have as many apps as your plan allows. The Pro plan covers 5 apps. The Team plan is unlimited.
+
+## Use cases for multi-app monitoring
+
+### Multiple environments
+
+Production, staging, and development environments can all connect to the same dashboard with different API keys. This lets you:
+
+- Verify staging behavior before a deploy
+- Compare production and staging cron run times during a migration
+- Get alerted on staging failures without treating them at production urgency
+
+Set lower alert thresholds or disable certain alert types for non-production environments.
+
+### Microservices or separated services
+
+If your product runs as several Laravel applications (an API, a separate worker service, an admin tool), each connects to Crontinel independently. You get a unified view of background job health across the full system.
+
+### Multi-region deployments
+
+A single application deployed to multiple regions (for latency or data residency reasons) can register each region as a separate app. You see whether all regions are processing jobs at the expected rate, and whether one region's Horizon is lagging behind another.
+
+### Agencies managing client applications
+
+An agency running Laravel applications for multiple clients can install Crontinel in each client app and monitor all of them from a shared team dashboard. Per-app API keys keep client data isolated. Granular team permissions mean a client can be granted read-only access to their own app's data.
+
+## Per-app configuration
+
+Each app sets its own thresholds independently:
+
+```bash
+# App A: billing-critical, tight thresholds
+CRONTINEL_QUEUE_DEPTH_INVOICES=5
+CRONTINEL_OLDEST_JOB_MINUTES=5
+CRONTINEL_ALERT_CHANNEL=pagerduty
+
+# App B: internal tooling, relaxed thresholds
+CRONTINEL_QUEUE_DEPTH_THRESHOLD=500
+CRONTINEL_OLDEST_JOB_MINUTES=60
+CRONTINEL_ALERT_CHANNEL=slack
+```
+
+There is no global configuration that applies to all apps. Each app's `.env` controls its own monitoring behavior.
+
+## Team access
+
+On the Team plan, team members are invited to the shared dashboard and can see all connected apps. Access levels:
+
+- **Admin**: full access, can add/remove apps, manage team members, change thresholds
+- **Read-only**: can view dashboards and run history, cannot change configuration
+
+For agencies, client access is typically read-only scoped to their specific app.
+
+## Dashboard across apps
+
+The Crontinel dashboard shows an overview page listing all connected apps with their current health status. A red indicator on any app takes you directly to that app's alert details.
+
+Each app has its own detailed view: Horizon supervisor status, queue depth charts, cron run history. You can bookmark the view for a specific app and share it with teammates working on that application.
+
+## Incident routing
+
+When multiple apps are connected, Crontinel routes alerts to each app's configured channel. An alert from your billing API goes to PagerDuty. An alert from your internal reporting tool goes to a Slack channel. They don't cross-contaminate.
+
+## Setup for multiple apps
+
+For each Laravel application:
+
+```bash
+composer require harunrrayhan/crontinel
+php artisan crontinel:install
+```
+
+Add the app-specific API key to `.env`, configure alert channels and thresholds, and the app appears in the dashboard within the first polling cycle.
+
+The Team plan at $49/month is the right tier for teams with more than 5 apps or when client access and granular permissions are needed.

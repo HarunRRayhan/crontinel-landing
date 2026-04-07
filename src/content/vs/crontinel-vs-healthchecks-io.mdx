@@ -1,0 +1,101 @@
+---
+title: "Crontinel vs Healthchecks.io: Beyond Dead-Man Monitoring for Laravel"
+description: "Healthchecks.io is a dead-man switch for cron jobs. Crontinel goes deeper: queue depth, Horizon supervisor state, and failed job rates, with no pings required."
+competitor: "Healthchecks.io"
+date: 2026-04-07
+---
+
+Healthchecks.io is a focused, well-built tool. It does one thing well: if your cron job doesn't ping within the expected window, it sends you an alert. That's valuable. For many teams with simple scheduled tasks, it's exactly what they need.
+
+For Laravel apps running Horizon, it's not enough.
+
+## What Healthchecks.io does
+
+Healthchecks.io works on the dead-man switch model. You register a check, get a unique ping URL, and add a curl call to your cron job:
+
+```bash
+* * * * * cd /var/www && php artisan send:invoices && curl -fsS --retry 3 https://hc-ping.com/your-uuid > /dev/null
+```
+
+If the ping doesn't arrive in the expected window, Healthchecks.io sends an alert. You can configure integrations: email, Slack, PagerDuty, webhooks, and more.
+
+This model is reliable for the scenarios it covers.
+
+## The gap: what happens between pings
+
+Healthchecks.io has no visibility into anything happening inside your application between pings. It can tell you a job ran (or didn't). It cannot tell you:
+
+- Whether Horizon has workers running
+- Whether a supervisor is paused
+- How many jobs are queued in each queue
+- How long the oldest queued job has been waiting
+- How many jobs are failing per minute
+
+These are exactly the signals that matter when your application is degrading silently. A supervisor can pause, jobs can pile up to thousands, and downstream services can start timing out, all while Healthchecks.io reports green because the cron ping arrived on schedule.
+
+## The instrumentation requirement
+
+Every cron job that Healthchecks.io monitors needs a curl ping added to it. That means:
+
+- Instrumenting every scheduled command individually
+- Remembering to add pings when you add new commands
+- Handling ping failures (the `--retry 3` in the curl call)
+- Maintaining the mapping between jobs and their ping URLs
+
+Crontinel hooks into Laravel's `ScheduledTaskFinished` and `ScheduledTaskFailed` events automatically. Once the package is installed, all scheduled tasks are recorded with no per-task instrumentation.
+
+## Feature comparison
+
+| Capability | Crontinel | Healthchecks.io |
+|---|---|---|
+| Horizon supervisor status | Yes | No |
+| Horizon paused detection | Yes | No |
+| Queue depth per queue | Yes | No |
+| Oldest job age | Yes | No |
+| Failed jobs per minute | Yes | No |
+| Cron run history | Yes | Yes (ping-based) |
+| Dead-man switch | No | Yes |
+| No code instrumentation needed | Yes | No |
+| Open source / self-hostable | Yes | Yes (but separate repo) |
+| Slack alerts | Yes | Yes |
+| Email alerts | Yes | Yes |
+| PagerDuty | Yes | Yes |
+| Webhook | Yes | Yes |
+
+## Pricing
+
+Healthchecks.io has a generous free tier (20 checks, 100 pings/check/month). Paid plans start at $20/month for more checks and team features.
+
+Crontinel is free for one app with 7 days of history. Pro is $19/month for up to 5 apps. Team is $49/month with unlimited apps and team access. The OSS package is MIT-licensed and works without the SaaS backend.
+
+## When Healthchecks.io is the right choice
+
+Healthchecks.io is a solid pick when:
+- You run simple cron jobs outside of Laravel
+- Dead-man switch monitoring is your primary need
+- You want to self-host (they publish their source)
+- You need a very generous free tier for many small checks
+
+## When Crontinel fits better
+
+Choose Crontinel when:
+- Your application uses Laravel Horizon
+- You need visibility into queue depth and supervisor state
+- You want monitoring that works without modifying every job
+- Your background jobs are revenue-critical and need fast alerting
+
+## Installing Crontinel
+
+```bash
+composer require harunrrayhan/crontinel
+php artisan crontinel:install
+```
+
+Add your alert channel to `.env`:
+
+```bash
+CRONTINEL_ALERT_CHANNEL=slack
+CRONTINEL_SLACK_WEBHOOK=https://hooks.slack.com/services/...
+```
+
+That's it. Every scheduled task starts recording, and Horizon monitoring starts immediately if Horizon is running.

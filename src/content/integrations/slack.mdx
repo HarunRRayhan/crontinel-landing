@@ -1,0 +1,98 @@
+---
+title: "Crontinel Slack Integration: Cron and Queue Alerts to Any Channel"
+description: "Send Crontinel alerts to Slack. Configure an incoming webhook, choose a channel, and get notified immediately when a Laravel cron job fails or Horizon supervisor pauses."
+date: 2026-04-07
+---
+
+Crontinel's Slack integration sends alert messages to any Slack channel via an incoming webhook. When a scheduled task fails, a queue backs up, or a Horizon supervisor pauses, a message arrives in Slack with the relevant context.
+
+## Setup
+
+### 1. Create a Slack incoming webhook
+
+Go to your Slack workspace's app management at `https://api.slack.com/apps`. Create a new app (or use an existing one), enable incoming webhooks, and create a webhook for the channel where alerts should appear.
+
+Copy the webhook URL, which looks like:
+
+```
+https://hooks.slack.com/services/<WORKSPACE_ID>/<CHANNEL_ID>/<TOKEN>
+```
+
+### 2. Add to your `.env`
+
+```bash
+CRONTINEL_ALERT_CHANNEL=slack
+CRONTINEL_SLACK_WEBHOOK=https://hooks.slack.com/services/<WORKSPACE_ID>/<CHANNEL_ID>/<TOKEN>
+```
+
+### 3. Verify the connection
+
+```bash
+php artisan crontinel:test-alert
+```
+
+This fires a test message to your configured Slack channel. If you see the message, the integration is working.
+
+## What Slack alerts look like
+
+Crontinel sends structured Slack messages with the alert type, app name, affected component, and a timestamp. A Horizon supervisor pause alert includes:
+
+- The supervisor name that paused
+- The time it was detected
+- Current queue depth for affected queues
+- A link to your Crontinel dashboard
+
+A scheduled task failure alert includes:
+
+- The task name and schedule expression
+- The exit code
+- The first few lines of captured output (if available)
+- Time of the run
+
+## Configuring the alert channel
+
+Point alerts to a dedicated `#cron-alerts` or `#infra-alerts` channel rather than a general engineering channel. Alert fatigue is real, and keeping infrastructure alerts in their own space makes it easier to notice genuine incidents.
+
+For staging environments, use a lower-urgency channel or a separate workspace. Crontinel allows per-app Slack webhook configuration, so staging and production can post to different channels.
+
+## Alert types sent to Slack
+
+Crontinel sends Slack messages for:
+
+- Scheduled task failure (non-zero exit code)
+- Scheduled task late (didn't run within the expected window)
+- Scheduled task missed (no run recorded for extended period)
+- Horizon supervisor paused
+- Horizon supervisor stopped
+- Queue depth exceeded threshold
+- Oldest job age exceeded threshold
+- Failed job rate exceeded threshold
+
+Recovery alerts (when a paused supervisor resumes, or queue depth drops back below threshold) are also sent so you know when an incident resolved without checking the dashboard.
+
+## Multiple alert channels
+
+To send alerts to both Slack and another channel (for example, Slack for warnings and PagerDuty for critical failures), use webhook integration to fan out alerts or configure the alert channel at the per-app level in the dashboard.
+
+The Team plan ($49/month) supports per-alert-type routing from the dashboard UI. On Pro and free, the alert channel is set globally per app via `.env`.
+
+## Slack alert customization
+
+The Slack message format uses Slack's block kit for readable formatting. You can configure the app name that appears in the message via:
+
+```bash
+CRONTINEL_APP_NAME="Production API"
+```
+
+This is especially useful when multiple apps post to the same Slack channel: each message includes the app name so you know which application the alert belongs to.
+
+## Troubleshooting
+
+If test alerts aren't appearing in Slack:
+
+1. Verify the webhook URL is complete and unmodified from Slack's settings
+2. Check that the Slack app has permission to post to the target channel
+3. Confirm there's no firewall rule blocking outbound HTTPS from your application server
+4. Check Laravel's log (`storage/logs/laravel.log`) for any curl or HTTP errors
+
+Crontinel logs all outbound alert attempts with their HTTP response codes. A `200` means Slack received the message. A `400` typically means the webhook URL is malformed.

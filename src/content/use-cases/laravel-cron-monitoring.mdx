@@ -1,0 +1,106 @@
+---
+title: "Laravel Cron Monitoring: Know When Scheduled Tasks Fail or Miss"
+description: "Monitor every Laravel scheduled task in production. Get alerted when a command fails, exits with a bad status code, or stops running entirely, without modifying each task."
+date: 2026-04-07
+---
+
+Laravel's task scheduler runs all your scheduled commands through a single cron entry:
+
+```bash
+* * * * * cd /var/www/html && php artisan schedule:run >> /dev/null 2>&1
+```
+
+That one cron entry fans out to every command registered in your `Kernel.php` (or `routes/console.php` on Laravel 11+). When everything works, it's elegant. When something breaks, the failure is often invisible.
+
+## Why cron failures go undetected
+
+The standard cron entry discards all output. A PHP fatal error, a missing environment variable, a failed database connection, all of these produce stderr output that goes straight to `/dev/null`. The cron daemon sees exit code 0, reports success, and moves on.
+
+Even if you capture output, you need something watching that output and alerting when it looks wrong.
+
+Laravel fires `ScheduledTaskFailed` when a command exits with a non-zero status. But you need a listener wired up to catch it, and that listener only fires for tasks that run and fail. It doesn't catch tasks that don't run at all.
+
+## What Crontinel monitors
+
+Crontinel hooks into the scheduler's lifecycle events to capture a run record for every command that executes:
+
+- Command name and schedule expression
+- Start time and duration
+- Exit code (0 for success, non-zero for failure)
+- Output captured from the command
+
+This runs automatically. You don't add anything to each command. Install the package and the recording starts from the next `schedule:run`.
+
+## Detecting missed runs
+
+A task can fail to run for reasons that have nothing to do with the task itself:
+
+- The cron daemon on the server stopped or was not restarted after a reboot
+- The crontab entry was removed during a server migration
+- The server ran out of memory and the PHP process was killed before starting
+- A deploy broke the working directory path in the cron entry
+
+None of these trigger `ScheduledTaskFailed`. The task simply doesn't run, and nothing fires.
+
+Crontinel detects missed runs by comparing the last recorded execution time against the expected schedule. If a task that runs every 5 minutes hasn't run in 10 minutes, an alert fires.
+
+## Alert channels
+
+Configure alerts in your `.env`:
+
+```bash
+CRONTINEL_ALERT_CHANNEL=slack
+CRONTINEL_SLACK_WEBHOOK=https://hooks.slack.com/services/...
+```
+
+Or use email:
+
+```bash
+CRONTINEL_ALERT_CHANNEL=mail
+CRONTINEL_ALERT_EMAIL=alerts@yourcompany.com
+```
+
+PagerDuty and webhook are also supported. Alerts include the task name, failure reason, and a link to the run history.
+
+## Monitoring multiple apps
+
+If you run multiple Laravel applications on separate servers or containers, each installs the Crontinel package independently and reports to a shared dashboard using its own API key. You see cron health across all apps in one place.
+
+This is useful for:
+- Staging and production environments side by side
+- Multi-region deployments of the same application
+- Multiple separate Laravel apps maintained by the same team
+
+## Setting up Crontinel for cron monitoring
+
+```bash
+composer require harunrrayhan/crontinel
+php artisan crontinel:install
+```
+
+Publish and run the migrations:
+
+```bash
+php artisan vendor:publish --tag=crontinel-migrations
+php artisan migrate
+```
+
+That's the full setup for local recording. To get cloud alerts and history, connect the app to your Crontinel dashboard using the API key from your account settings.
+
+## What the run history looks like
+
+The dashboard shows a timeline for each scheduled task: when it ran, how long it took, and whether it succeeded. Late runs are highlighted. Failed runs show the exit code and captured output.
+
+This is the same information you'd get from reading log files, but organized by task and surfaced without having to SSH into the server.
+
+## Cron monitoring checklist
+
+Before considering cron monitoring complete in a production app:
+
+- Crontinel package installed and recording runs
+- Alert channel configured and tested
+- Missed-run detection enabled for time-sensitive tasks
+- Run history retained long enough to debug intermittent failures (Pro: 90 days)
+- Multi-app monitoring set up if running more than one application
+
+Silent cron failures are a common source of production incidents that never show up in error tracking tools. Crontinel makes them visible.

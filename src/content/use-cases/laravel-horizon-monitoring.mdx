@@ -1,0 +1,98 @@
+---
+title: "Laravel Horizon Monitoring: Supervisors, Queue Depth, and Failed Jobs"
+description: "Monitor Laravel Horizon in production. Get alerted when supervisors pause, queues back up, or failed jobs spike, without polling the dashboard manually."
+date: 2026-04-07
+---
+
+Laravel Horizon gives you a real-time dashboard for your queue workers. It's excellent for seeing current state. It does not alert you when that state goes wrong.
+
+A Horizon supervisor can pause at 2am. Jobs can pile up to thousands. Customers can start seeing delayed responses. And Horizon's dashboard sits there showing you exactly what's happening, to anyone who thinks to look.
+
+Crontinel reads the same Redis keys Horizon writes and fires alerts when they indicate trouble. No polling the dashboard. No checking at odd hours.
+
+## What Horizon writes to Redis
+
+Horizon stores its operational state in Redis using well-defined key patterns. The supervisor states, process counts, queue metrics, and job history are all there. Crontinel reads them directly, which means:
+
+- No polling your application's HTTP endpoints
+- No Horizon API to authenticate against
+- Works even when your web server is down (Redis is still up)
+
+## Signals Crontinel monitors
+
+### Supervisor status
+
+Every Horizon supervisor has a status in Redis: `running`, `paused`, or `stopped`. Crontinel polls this for each supervisor and alerts when any supervisor moves out of the `running` state.
+
+A paused supervisor is a common failure mode during deployments. A `php artisan horizon:terminate` that doesn't restart cleanly leaves the supervisor paused. Crontinel catches this within seconds.
+
+### Queue depth
+
+Crontinel reads the pending job count per queue and alerts when depth exceeds a configured threshold. You set separate thresholds per queue:
+
+```bash
+CRONTINEL_QUEUE_DEPTH_THRESHOLD=100          # default for all queues
+CRONTINEL_QUEUE_DEPTH_INVOICES=25            # tighter threshold for billing queue
+```
+
+This lets you be aggressive about billing queue alerts without getting paged for a temporarily backed-up notification queue.
+
+### Oldest job age
+
+A queue with 50 jobs and an oldest job age of 2 minutes is fine. A queue with 50 jobs and an oldest job age of 40 minutes is not. Crontinel tracks both and alerts when the oldest job age exceeds your threshold, separate from depth.
+
+### Failed job rate
+
+Horizon tracks failed jobs in a sorted set. Crontinel computes a rolling failure rate (failures per minute over the last 5 minutes) and alerts when it exceeds a configured threshold. A spike in failures often indicates a broken external dependency before the queue depth metric catches it.
+
+## Setup
+
+Crontinel's Horizon monitoring activates automatically when Horizon is detected. The package checks for Horizon's presence in `vendor/` and starts reading Redis state on the same polling cycle as cron recording.
+
+```bash
+composer require harunrrayhan/crontinel
+php artisan crontinel:install
+```
+
+Configure your thresholds in `.env`:
+
+```bash
+CRONTINEL_HORIZON_ENABLED=true
+CRONTINEL_HORIZON_SUPERVISOR_ALERT=true
+CRONTINEL_QUEUE_DEPTH_THRESHOLD=100
+CRONTINEL_FAILED_JOBS_PER_MINUTE=5
+```
+
+## Alert example
+
+When a supervisor pauses, Crontinel fires an alert to your configured channel. A Slack message looks like:
+
+```
+[Crontinel] Horizon supervisor "default" is paused
+App: production-api
+Paused at: 2:14am UTC
+Queue depth (emails): 847 jobs
+Oldest job: 12 minutes
+```
+
+You get the supervisor name, the queue state at the time of the alert, and a direct link to your Crontinel dashboard.
+
+## Horizon monitoring vs Horizon dashboard
+
+The Horizon dashboard shows you current state. It's useful when you're already debugging a problem. Crontinel tells you when a problem starts, so you're not waiting for a user report before you check the dashboard.
+
+These two tools serve different moments in the incident lifecycle. Use both.
+
+## Team access
+
+On the Team plan ($49/month), team members can view all connected apps in the shared dashboard. Engineers on-call can check Horizon health for all apps without needing Redis access or a VPN.
+
+## Common Horizon failure scenarios Crontinel catches
+
+- Supervisor pauses after a `horizon:terminate` during deploy (common with Envoyer)
+- Redis memory pressure causes Horizon to stop processing new jobs
+- An external API starts throttling, causing job failures to spike
+- Queue depth builds up overnight when traffic is low and workers are insufficient
+- A failed deployment leaves workers running old code that can't deserialize new job payloads
+
+All of these produce Redis state changes that Crontinel detects without any application-level ping or custom command.

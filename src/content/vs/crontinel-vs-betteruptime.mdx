@@ -1,0 +1,99 @@
+---
+title: "Crontinel vs Better Stack: Laravel-Native Monitoring vs General Uptime"
+description: "Better Stack monitors uptime, logs, and incidents. Crontinel monitors Laravel specifically: Horizon supervisors, queue depth, cron history. Here's how they differ."
+competitor: "Better Stack"
+date: 2026-04-07
+---
+
+Better Stack (formerly Better Uptime) is a broad observability platform. It handles uptime monitoring, log management, incident management, and on-call scheduling. It's a capable tool, and many teams use it as their primary alerting layer.
+
+For Laravel background job monitoring, it requires significant manual setup to cover what Crontinel handles automatically.
+
+## What Better Stack covers
+
+Better Stack's core strengths are:
+
+- **Uptime monitoring**: HTTP checks for your endpoints, with fast alerting when they go down
+- **Log management**: Ship application logs and search them from a central interface
+- **Incident management**: On-call schedules, escalation policies, and incident timelines
+- **Heartbeat monitoring**: A cron-ping feature similar to Healthchecks.io
+
+The heartbeat feature is the most relevant to cron monitoring. You create a heartbeat, get a ping URL, and your cron job pings it on completion.
+
+## The Laravel monitoring gap
+
+Better Stack's heartbeat monitoring has the same limitation as any ping-based approach: it knows a ping arrived. It doesn't know what's happening in your application.
+
+For Laravel Horizon specifically, Better Stack has no native integration. To get meaningful Horizon monitoring, you'd need to:
+
+1. Write a custom Laravel command that checks Horizon status, queue depths, and failed job counts
+2. Expose that data via a health endpoint
+3. Configure Better Stack to poll that endpoint
+4. Write threshold logic and alert conditions in Better Stack's dashboard
+
+That's a custom monitoring solution built on top of Better Stack's infrastructure. It's maintainable but it requires ongoing work when your Horizon configuration changes.
+
+Crontinel ships that monitoring as a first-class feature. Install the package and Horizon monitoring is active with no custom code.
+
+## Log shipping vs event-driven monitoring
+
+Better Stack's log approach requires you to ship logs somewhere searchable and then write queries to detect failures. That works for debugging after the fact.
+
+Crontinel is event-driven. When a scheduled task fails, the `ScheduledTaskFailed` event fires and Crontinel alerts immediately, before any log is queried. When Horizon's supervisor pauses, Crontinel detects it by polling Redis state directly, with no log parsing required.
+
+Event-driven monitoring has a lower mean time to alert than log-based monitoring for the same failure.
+
+## Cost comparison
+
+Better Stack's pricing for cron/heartbeat monitoring and incident management starts at $24/month for small teams. Full-featured plans with log management run significantly higher.
+
+Crontinel is:
+- Free: 1 app, 7 days of history
+- Pro: $19/month, up to 5 apps, 90 days of history
+- Team: $49/month, unlimited apps, team access
+
+For Laravel background job monitoring specifically, Crontinel covers more ground at a lower price point.
+
+## Feature comparison
+
+| Capability | Crontinel | Better Stack |
+|---|---|---|
+| Horizon supervisor status | Yes | No (custom required) |
+| Horizon paused detection | Yes | No (custom required) |
+| Queue depth per queue | Yes | No (custom required) |
+| Oldest job age alert | Yes | No (custom required) |
+| Failed jobs per minute | Yes | No (custom required) |
+| Cron heartbeat monitoring | No | Yes |
+| Uptime monitoring (HTTP) | No | Yes |
+| Log management | No | Yes |
+| On-call scheduling | No | Yes |
+| Incident management | No | Yes |
+| Slack alerts | Yes | Yes |
+| PagerDuty | Yes | Yes |
+| Webhook | Yes | Yes |
+| Open source / self-hostable | Yes | No |
+
+## When Better Stack is the right choice
+
+Better Stack is a better fit when:
+- You need uptime monitoring alongside cron monitoring
+- You want a unified platform for logs, incidents, and on-call
+- Your stack is heterogeneous (not just Laravel)
+- You need a mature incident management workflow
+
+## When Crontinel fits better
+
+Crontinel fits better when:
+- Laravel is your primary stack
+- Horizon monitoring is a first-class requirement
+- You want zero-instrumentation setup
+- You want a focused, affordable tool rather than a full observability platform
+
+## Getting started
+
+```bash
+composer require harunrrayhan/crontinel
+php artisan crontinel:install
+```
+
+Configure alerts in `.env` and connect to the dashboard. Horizon monitoring and cron history are active immediately, with no custom commands or log queries needed.

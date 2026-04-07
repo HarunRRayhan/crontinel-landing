@@ -1,0 +1,121 @@
+---
+title: "Crontinel Laravel Integration: Setup and Configuration"
+description: "Install Crontinel in a Laravel application. Configure the OSS package, publish migrations, set alert channels, and connect to the cloud dashboard in under 10 minutes."
+date: 2026-04-07
+---
+
+Crontinel is a Laravel-native monitoring tool built as a Composer package. The OSS package runs inside your application and monitors scheduled tasks, Horizon workers, and queue state. Optionally, it reports to the Crontinel cloud dashboard for historical records and alert management.
+
+## Requirements
+
+- Laravel 10 or 11
+- PHP 8.1 or higher
+- Redis (required for Horizon monitoring; optional for cron-only monitoring)
+
+## Installation
+
+Add the package via Composer:
+
+```bash
+composer require harunrrayhan/crontinel
+```
+
+Run the installer command:
+
+```bash
+php artisan crontinel:install
+```
+
+The installer publishes the config file and prompts you to publish and run migrations. You can also do this manually:
+
+```bash
+php artisan vendor:publish --tag=crontinel-config
+php artisan vendor:publish --tag=crontinel-migrations
+php artisan migrate
+```
+
+## Configuration
+
+The published config file is `config/crontinel.php`. Most settings are driven by environment variables, so you typically don't need to modify the config file directly.
+
+Add these to your `.env`:
+
+```bash
+# Required: sets the alert destination
+CRONTINEL_ALERT_CHANNEL=slack          # slack | mail | webhook | pagerduty | null
+
+# Slack
+CRONTINEL_SLACK_WEBHOOK=https://hooks.slack.com/services/T00000000/B00000000/XXXXXXXX
+
+# Email
+CRONTINEL_ALERT_EMAIL=alerts@yourcompany.com
+
+# Webhook
+CRONTINEL_WEBHOOK_URL=https://your-endpoint.example.com/crontinel-alerts
+
+# PagerDuty
+CRONTINEL_PAGERDUTY_ROUTING_KEY=your-events-api-v2-key
+
+# Optional: connect to cloud dashboard
+CRONTINEL_API_KEY=ct_app_xxxxxxxxxxxx
+CRONTINEL_APP_NAME="My Laravel App"
+```
+
+## How scheduling monitoring works
+
+Crontinel automatically hooks into Laravel's scheduler event lifecycle. No changes to your `Kernel.php` or `routes/console.php` are needed.
+
+When `php artisan schedule:run` executes:
+
+1. Crontinel records a run attempt for each scheduled task
+2. After each task completes, exit code and duration are stored
+3. Failed tasks (non-zero exit) trigger an alert through the configured channel
+4. Run records are persisted locally (and synced to the cloud dashboard if an API key is configured)
+
+## How Horizon monitoring works
+
+If Laravel Horizon is installed, Crontinel detects it automatically and starts polling Horizon's Redis keys. It monitors:
+
+- Supervisor status (running, paused, stopped) per supervisor
+- Per-queue pending job count
+- Oldest pending job age per queue
+- Failed job rate over the last 5 minutes
+
+Horizon monitoring runs on a 30-second polling interval by default:
+
+```bash
+CRONTINEL_HORIZON_POLL_INTERVAL=30     # seconds
+CRONTINEL_QUEUE_DEPTH_THRESHOLD=100
+CRONTINEL_OLDEST_JOB_MINUTES=15
+CRONTINEL_FAILED_JOBS_PER_MINUTE=5
+```
+
+## Checking monitoring status
+
+After installation, verify everything is working:
+
+```bash
+php artisan crontinel:check
+```
+
+This command shows the status of each monitored component: last scheduler run time, Horizon supervisor states, and queue depths.
+
+To test your alert channel:
+
+```bash
+php artisan crontinel:test-alert
+```
+
+## Cloud dashboard setup
+
+The OSS package works standalone without a cloud account. To enable the dashboard, run history, and team access, create an account at [app.crontinel.com](https://app.crontinel.com), create an app, and copy the API key to your `.env`.
+
+## Deploying to production
+
+Crontinel works in any deployment environment: traditional VPS, Forge-managed servers, Vapor, Docker containers, and Kubernetes. The package reads from Redis and the local database; it doesn't need outbound HTTP to function (alerts are the only outbound calls).
+
+For zero-downtime deploys with Envoyer: add `php artisan crontinel:check` to your deploy hooks to verify monitoring is intact after each deploy.
+
+## Free tier limits
+
+The free plan covers one connected app with 7 days of run history. Alert channels (Slack, email, webhook, PagerDuty) are all available on the free tier. Upgrade to Pro ($19/month) for more apps and 90 days of history, or Team ($49/month) for unlimited apps and team access.

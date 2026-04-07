@@ -1,0 +1,93 @@
+---
+title: "Laravel Queue Monitoring: Depth, Failures, and Stuck Jobs"
+description: "Monitor Laravel queues in production. Alert on queue depth, failed job spikes, and oldest job age before customers notice slow background processing."
+date: 2026-04-07
+---
+
+Laravel queues are the foundation of most production application's background processing. Emails, invoices, webhooks, data imports, report generation: all of these typically run through queued jobs. When queues degrade, customers feel it.
+
+Queue depth alone doesn't tell you if something is wrong. A queue with 500 jobs can be healthy if you have 20 workers and jobs complete in 100ms each. The same queue with 2 workers and a downstream API timing out is a problem.
+
+Meaningful queue monitoring requires more than a job count.
+
+## What to monitor in a Laravel queue
+
+### Queue depth per queue
+
+Laravel supports multiple named queues. Your application might have `default`, `emails`, `invoices`, `exports`, and `notifications` as separate queues. Each has its own characteristics:
+
+- `invoices` should almost never have more than 10 pending jobs
+- `notifications` might spike to 1,000 during a product launch and that's fine
+- `exports` jobs take 30 seconds each, so depth matters differently
+
+Crontinel lets you set per-queue depth thresholds rather than a single global number. Configure the queues that matter most with tighter limits.
+
+### Oldest job age
+
+A job sitting in a queue for 30 minutes when workers are running is a sign something is broken. Either the job can't be deserialized (payload issue after a deploy), the job keeps failing and backing off, or it acquired a lock it can't release.
+
+Oldest job age catches these situations before queue depth does, because a single stuck job can block a queue without increasing depth significantly.
+
+### Failed job rate
+
+The failed job table tells you jobs are failing. The failure rate over time tells you if failures are getting worse, staying stable, or recovering. A sudden spike in failures usually means an external dependency changed: a third-party API started returning 500s, a rate limit was hit, or a database query started timing out.
+
+Crontinel computes a rolling failed-jobs-per-minute rate and alerts when it exceeds a configured threshold.
+
+### Worker availability
+
+If your workers stop (process crash, out of memory, OOM kill), jobs queue up but no alert fires unless you're monitoring worker state. Crontinel reads Horizon's supervisor state from Redis directly, so a worker crash or pause shows up immediately.
+
+## Configuration
+
+```bash
+# Queue depth thresholds
+CRONTINEL_QUEUE_DEPTH_THRESHOLD=200        # default for all queues
+CRONTINEL_QUEUE_DEPTH_INVOICES=10         # per-queue override
+CRONTINEL_QUEUE_DEPTH_EXPORTS=50
+
+# Job age threshold (minutes)
+CRONTINEL_OLDEST_JOB_MINUTES=15
+
+# Failure rate
+CRONTINEL_FAILED_JOBS_PER_MINUTE=3
+
+# Alert channel
+CRONTINEL_ALERT_CHANNEL=slack
+CRONTINEL_SLACK_WEBHOOK=https://hooks.slack.com/services/...
+```
+
+## Queues without Horizon
+
+Crontinel works with standard `php artisan queue:work` setups, not only with Horizon. If you're running workers via Supervisor (the process manager, not Horizon) or directly from a systemd unit, Crontinel reads queue state from the database or Redis depending on your configured queue driver.
+
+Horizon-specific features (per-supervisor status, paused detection) require Horizon. Queue depth and failed job monitoring work with any queue setup.
+
+## Responding to queue alerts
+
+When Crontinel fires a queue alert, the first step is identifying the cause:
+
+**High depth, workers running:** Upstream traffic spike. Add workers temporarily or check if jobs are completing slower than usual (downstream API latency?).
+
+**High depth, workers paused:** Horizon supervisor issue. Check `php artisan horizon:status` and restart if needed.
+
+**High failure rate:** Check `php artisan queue:failed` for the most recent failures. The exception message usually points to the root cause.
+
+**High oldest job age, low depth:** Single stuck job. Inspect it with `php artisan queue:failed` and either retry or delete it.
+
+## Dashboard view
+
+Crontinel's dashboard shows a timeline for each monitored queue: depth over time, failure rate over time, and worker status. This makes it easy to correlate a queue depth spike with a deployment or external event.
+
+The 90-day history on Pro plan means you can compare this week's queue behavior against a month ago to identify patterns before they become incidents.
+
+## Getting started
+
+```bash
+composer require harunrrayhan/crontinel
+php artisan crontinel:install
+php artisan vendor:publish --tag=crontinel-migrations
+php artisan migrate
+```
+
+Add your alert configuration and connect to the dashboard. Queue monitoring starts on the next polling cycle, with no changes to your job classes needed.

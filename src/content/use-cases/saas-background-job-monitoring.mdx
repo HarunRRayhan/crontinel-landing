@@ -1,0 +1,82 @@
+---
+title: "SaaS Background Job Monitoring for Laravel Applications"
+description: "Revenue-critical background jobs need dedicated monitoring. Invoice generation, subscription renewals, and webhook delivery can fail silently. Crontinel surfaces failures before customers notice."
+date: 2026-04-07
+---
+
+SaaS applications built on Laravel depend on background jobs for the workflows that generate revenue and maintain customer trust. Invoice generation, subscription renewals, dunning emails, webhook delivery, trial expiration, seat provisioning: these are all background jobs. When they fail silently, the business feels it before the engineering team does.
+
+## Why SaaS jobs need dedicated monitoring
+
+Standard error tracking (Sentry, Bugsnag, Flare) captures exceptions. If a job throws an unhandled exception, it shows up in your error tracker. That's good.
+
+But several categories of SaaS job failures don't produce exceptions:
+
+**Jobs that don't run.** If Horizon pauses after a deploy and your `send:renewal-invoices` command doesn't fire that night, no exception occurs. Nothing hits Sentry. You find out when a customer reports they weren't invoiced.
+
+**Jobs that succeed with wrong data.** A job that queries stale data, processes it correctly, and exits with code 0 looks successful to every monitoring tool. Crontinel records the run as successful too. This category requires application-level validation, not infrastructure monitoring.
+
+**Queues that back up without failing.** Your invoice processing queue might have 400 pending jobs because a payment gateway is responding slowly, but all workers are running and no jobs are failing. Queue depth monitoring catches this; exception tracking does not.
+
+Crontinel covers the first and third categories that exception tracking misses.
+
+## Billing job monitoring
+
+Billing jobs are the highest-stakes background tasks in a SaaS application. A few things to monitor specifically:
+
+**Invoice generation:** Set a tight queue depth threshold on your `invoices` queue (5 to 10 pending jobs is usually fine, 50 is not). Alert immediately when depth exceeds it.
+
+**Subscription renewals:** These run on a schedule. Use Crontinel's missed-run detection to alert if the renewal command hasn't fired within its expected window.
+
+**Payment retries (dunning):** Failed payment retry jobs that queue up without processing mean customers in dunning never get retried, and potential revenue is lost silently.
+
+Configure thresholds in `.env`:
+
+```bash
+CRONTINEL_QUEUE_DEPTH_INVOICES=10
+CRONTINEL_QUEUE_DEPTH_BILLING=5
+CRONTINEL_OLDEST_JOB_MINUTES=10
+CRONTINEL_ALERT_CHANNEL=pagerduty
+CRONTINEL_PAGERDUTY_ROUTING_KEY=your-routing-key
+```
+
+Using PagerDuty for billing alerts and Slack for lower-severity alerts is a common pattern. Crontinel supports configuring multiple alert channels.
+
+## Webhook delivery monitoring
+
+SaaS applications that publish webhooks to customer endpoints are responsible for reliable delivery. A webhook queue that backs up silently breaks customer integrations.
+
+Monitor your `webhooks` queue depth separately from your general-purpose queue. Webhook jobs that fail at a high rate indicate a systematic problem with delivery (endpoint changes, TLS issues, timeout thresholds) rather than a random transient failure.
+
+## Multi-tenant considerations
+
+Many SaaS applications serve multiple tenants from a single application instance. Background jobs often run in a tenant context: send emails for tenant A, process imports for tenant B, generate reports for tenant C.
+
+Crontinel monitors at the application level, not the tenant level. If your billing job fails because of a problem affecting all tenants (Stripe API down, database timeout), Crontinel catches that. Per-tenant job failures that are isolated to one tenant need application-level observability.
+
+For multi-application SaaS (different apps per major customer or per region), connect each application to Crontinel separately. Each gets its own API key and appears as a distinct app in your dashboard.
+
+## On-call integration
+
+For production SaaS billing and core background jobs, connect Crontinel alerts to your on-call system. PagerDuty creates a deduplicated incident per alert type: a Horizon supervisor pause creates one incident, not a new alert every minute.
+
+When the supervisor recovers, Crontinel fires a resolve event to PagerDuty automatically, closing the incident without manual intervention.
+
+## What a complete setup looks like
+
+A well-monitored SaaS background job layer with Crontinel covers:
+
+1. Horizon supervisor status: any supervisor pause fires an immediate alert
+2. Queue depth per queue: separate thresholds for billing, notifications, and general queues
+3. Oldest job age: alert if any job has been queued for more than 15 minutes
+4. Failed job rate: alert on spikes that indicate external dependency failures
+5. Scheduled task history: all billing-related scheduled commands tracked with exit codes
+
+Install time is under 10 minutes for a Laravel app already running Horizon.
+
+```bash
+composer require harunrrayhan/crontinel
+php artisan crontinel:install
+```
+
+Start with the free tier (1 app, 7 days of history) to validate the setup before connecting to your production dashboard on Pro or Team.
