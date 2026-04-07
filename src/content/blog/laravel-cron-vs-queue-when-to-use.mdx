@@ -1,0 +1,220 @@
+---
+title: "Cron vs Queue in Laravel: A Practical Guide to Choosing the Right Pattern"
+description: "Should this be a scheduled command or a queued job? The answer depends on trigger source, execution guarantees, and failure recovery. Here's a decision framework with real examples."
+date: 2026-04-07
+tags: ["laravel", "cron", "queues"]
+---
+
+You're building a feature that sends invoice reminders. Should it be a scheduled command that runs every morning and finds overdue invoices? Or a queued job that fires when an invoice becomes overdue? Both work. Both have failure modes the other handles better. Choosing wrong doesn't break anything immediately, but it creates operational problems that compound over time.
+
+This post lays out when to use cron (scheduled commands), when to use queues (dispatched jobs), and when you need both.
+
+## The fundamental difference
+
+A scheduled command runs on a fixed schedule regardless of external events. It asks: "Is there work to do right now?" A queued job runs in response to something happening. It says: "This specific thing needs to be done."
+
+```php
+// Cron: runs every morning, looks for work
+$schedule->command('invoices:send-reminders')->dailyAt('09:00');
+
+// Queue: runs when a specific event triggers it
+InvoiceBecameOverdue::dispatch($invoice);
+```
+
+The scheduled command scans for all overdue invoices and processes them. The queued job processes one specific invoice that just became overdue. Same end result, different operational characteristics.
+
+## When to use cron
+
+### Batch processing on a fixed cadence
+
+Tasks that scan a dataset and process matching records are natural fits for cron. The schedule defines when processing happens, and the command determines what to process.
+
+```php
+// Good cron use: nightly cleanup of expired sessions
+$schedule->command('sessions:cleanup')->dailyAt('03:00');
+```
+
+```php
+// The command processes everything that matches
+public function handle(): int
+{
+    $deleted = DB::table('sessions')
+        ->where('last_activity', '<', now()->subHours(24))
+        ->delete();
+
+    $this->info("Cleaned up {$deleted} expired sessions.");
+    return Command::SUCCESS;
+}
+```
+
+### External data synchronization
+
+Pulling data from external APIs on a schedule is a cron task. The trigger is time-based, not event-based.
+
+```php
+$schedule->command('sync:exchange-rates')->hourly();
+$schedule->command('sync:inventory --source=warehouse-api')->everyThirtyMinutes();
+```
+
+### Health checks and reporting
+
+Tasks that check system state or generate reports belong on a schedule:
+
+```php
+$schedule->command('health:check-dependencies')->everyFiveMinutes();
+$schedule->command('reports:daily-revenue')->dailyAt('07:00');
+```
+
+### The cron advantage
+
+Cron tasks are predictable. They run at known times and you can verify they ran by checking whether the execution happened within the expected window. If a cron task doesn't run, the absence is detectable. You know when it should have run, and you can alert on the gap.
+
+## When to use queues
+
+### Responding to user actions
+
+When a user does something that triggers background work, queue a job. The user's action is the trigger, not the clock.
+
+```php
+// User places an order
+class OrderController
+{
+    public function store(Request $request): JsonResponse
+    {
+        $order = Order::create($request->validated());
+
+        // Queue background work
+        ProcessPayment::dispatch($order);
+        SendOrderConfirmation::dispatch($order);
+        NotifyWarehouse::dispatch($order);
+
+        return response()->json($order, 201);
+    }
+}
+```
+
+### Work that needs to happen "soon" but not synchronously
+
+If the work would slow down an HTTP response or a parent process, queue it:
+
+```php
+// Generating a PDF report takes 8 seconds
+// Don't make the user wait
+GenerateReport::dispatch($report)->onQueue('reports');
+
+return response()->json(['status' => 'generating', 'report_id' => $report->id]);
+```
+
+### Work that benefits from retry logic
+
+Queued jobs have built-in retry, backoff, and failure handling. If the work involves external services that might be temporarily unavailable, queues handle the retry loop for you:
+
+```php
+class SendWebhook implements ShouldQueue
+{
+    public int $tries = 5;
+    public array $backoff = [10, 30, 60, 300, 900];
+
+    public function handle(): void
+    {
+        Http::timeout(15)->post($this->url, $this->payload);
+    }
+}
+```
+
+### The queue advantage
+
+Queues handle concurrency naturally. Ten users place orders simultaneously, ten jobs are dispatched, workers process them in parallel (or sequentially, depending on worker count). With cron, you'd need to handle the "what if there are 10,000 records to process" problem inside a single command execution.
+
+## When you need both
+
+Many real-world features use cron and queues together. The cron task finds work, and the queue processes it.
+
+```php
+// Cron: find overdue invoices every morning
+$schedule->command('invoices:find-overdue')->dailyAt('09:00');
+```
+
+```php
+// The command dispatches a job per invoice
+public function handle(): int
+{
+    $overdue = Invoice::where('due_date', '<', now())
+        ->where('status', 'unpaid')
+        ->where('reminder_sent', false)
+        ->get();
+
+    foreach ($overdue as $invoice) {
+        SendInvoiceReminder::dispatch($invoice);
+    }
+
+    $this->info("Dispatched {$overdue->count()} reminder jobs.");
+    return Command::SUCCESS;
+}
+```
+
+This pattern gives you the best of both worlds. The cron schedule is predictable and monitorable. The queued jobs handle individual processing with retries and failure isolation. If one invoice reminder fails, the others still send.
+
+### The anti-pattern: doing everything in the cron command
+
+```php
+// Don't do this for large datasets
+public function handle(): int
+{
+    $overdue = Invoice::where('due_date', '<', now())->get();
+
+    foreach ($overdue as $invoice) {
+        // If this throws on invoice #50, invoices 51-500 never get processed
+        Mail::to($invoice->user)->send(new InvoiceReminder($invoice));
+        $invoice->update(['reminder_sent' => true]);
+    }
+
+    return Command::SUCCESS;
+}
+```
+
+If the mail server is slow or down, this command blocks for the entire batch. If it crashes halfway through, the remaining invoices don't get processed until the next scheduled run. The queued approach isolates failures per invoice.
+
+## Decision framework
+
+Ask these questions in order:
+
+**1. What triggers the work?**
+- A fixed time or interval: cron
+- A user action or system event: queue
+- Both (find work on schedule, process individually): cron dispatching to queue
+
+**2. How long does the work take?**
+- Seconds: either works, but queues are better if it's part of a request cycle
+- Minutes: queue (don't block the scheduler for that long)
+- Hours: queue with proper timeout and heartbeat monitoring
+
+**3. What happens when it fails?**
+- Retry the whole batch: cron (just wait for the next scheduled run)
+- Retry individual items: queue (per-job retry with backoff)
+- Alert a human: either, but both need explicit instrumentation
+
+**4. Does order matter?**
+- Must process in order: cron with a single-threaded command, or queue with a single worker
+- Order doesn't matter: queue with parallel workers
+
+## Monitoring implications
+
+Cron and queues fail differently, and they need different monitoring.
+
+**Cron failures** are primarily about missed runs: the task didn't execute at all. This happens when the crontab entry is broken, the server's cron daemon is down, or the task was skipped by `withoutOverlapping()`. Detecting missed runs requires tracking execution history and alerting on gaps.
+
+**Queue failures** are primarily about processing problems: the job ran but failed. This shows up as growing queue depth, rising failure rates, and increasing job age. Detecting queue problems requires tracking depth, throughput, and failure metrics.
+
+If you use the cron-dispatches-to-queue pattern, you need both types of monitoring. The cron side needs missed-run detection. The queue side needs depth and failure tracking.
+
+## How Crontinel covers both
+
+Crontinel monitors scheduled tasks and queue health in one tool. For cron, it tracks execution history per command and alerts on missed runs. For queues, it tracks depth, oldest job age, failure rate, and throughput. For the combined pattern, it connects the cron execution to the resulting queue activity, so you can see whether the cron task ran, how many jobs it dispatched, and whether those jobs completed.
+
+```bash
+composer require harunrrayhan/crontinel
+php artisan crontinel:install
+```
+
+See [crontinel.com/features](https://crontinel.com/features) for the full list of cron and queue metrics tracked.

@@ -1,0 +1,152 @@
+---
+title: "What Happens to Horizon When Redis Drops: Data Loss, Recovery, and Monitoring"
+description: "Redis goes down and Horizon loses its connection. Jobs vanish, supervisors crash, and the dashboard goes blank. Here's exactly what breaks, what recovers automatically, and what you lose permanently."
+date: 2026-04-07
+tags: ["laravel", "horizon", "redis"]
+---
+
+Redis drops for 30 seconds. Maybe it's a failover, maybe it's an OOM kill, maybe someone ran `FLUSHALL` on the wrong instance. When it comes back, Horizon looks like it's running. But jobs that were in-flight are gone, the dashboard shows gaps in throughput data, and your failed_jobs table has entries with cryptic connection errors.
+
+Understanding what Horizon loses during a Redis outage is the first step toward building monitoring that catches it quickly.
+
+## What breaks immediately
+
+When the Redis connection drops, three things happen in rapid succession:
+
+### 1. Workers lose their current job context
+
+A queue worker mid-execution communicates with Redis to extend its lock on the current job (the "reservation"). When Redis becomes unreachable, the worker can't extend the reservation. If Redis comes back before the reservation expires, the worker continues. If it doesn't, another worker may pick up the same job, causing duplicate execution.
+
+The reservation timeout is controlled by the `retry_after` setting in `config/queue.php`:
+
+```php
+'redis' => [
+    'driver' => 'redis',
+    'connection' => 'default',
+    'queue' => 'default',
+    'retry_after' => 90, // seconds
+],
+```
+
+If Redis is down for longer than `retry_after`, any job that was mid-execution may be picked up again when Redis recovers.
+
+### 2. Supervisor heartbeats stop updating
+
+Each Horizon supervisor writes a heartbeat timestamp to Redis every few seconds. When Redis is down, heartbeats stop. If you have any monitoring that checks heartbeat freshness (including Horizon's own internal supervisor monitor), it will flag all supervisors as dead.
+
+When Redis recovers, supervisors resume writing heartbeats. But there's a gap in the heartbeat history that can trigger alerts.
+
+### 3. The Horizon dashboard goes blank
+
+The Horizon dashboard reads all its data from Redis. Queue depths, throughput graphs, recent jobs, failed jobs: all of it comes from Redis keys. When Redis is down, the dashboard shows nothing or throws connection errors.
+
+This means the one place you'd normally check during an incident is itself broken by the incident. You can't use the Horizon dashboard to diagnose a Redis outage.
+
+## What recovers automatically
+
+When Redis comes back:
+
+**Supervisors reconnect and resume.** Horizon's supervisor processes handle Redis reconnection automatically. They retry the connection and, once successful, resume processing jobs and updating heartbeats. You don't need to restart Horizon manually after a Redis blip.
+
+**Queue contents that weren't evicted are intact.** Jobs sitting in the queue (not being processed) are stored as Redis list entries. If Redis recovers without data loss (e.g., a network blip, not a crash without persistence), those jobs are still there.
+
+**The dashboard repopulates.** Once Redis is reachable, the dashboard starts showing current data. Historical data during the outage window is missing, but current state is accurate.
+
+## What you lose permanently
+
+**In-flight job state.** If a worker was halfway through processing a job and Redis dropped, the job's progress is lost. The job either gets retried from scratch (if Redis recovers and the reservation expired) or completes on the original worker but can't report its completion to Redis.
+
+**Throughput and runtime metrics during the outage.** Horizon stores throughput and runtime data in time-bucketed Redis hashes. If workers processed jobs during the outage (possible if the job didn't need Redis), the completion metrics were never written. Those time buckets show zero throughput even if work happened.
+
+**Failed job records that couldn't be written.** If a job fails while Redis is down, the failure record can't be written to `horizon:failed-jobs`. The job fails silently from Horizon's perspective. It may still be recorded in the `failed_jobs` database table if the database is accessible, but the Horizon dashboard won't show it.
+
+## Redis persistence and what it means for queues
+
+Redis offers two persistence modes: RDB (point-in-time snapshots) and AOF (append-only file). Your choice directly affects queue durability:
+
+**No persistence (default on many setups):** If Redis crashes, all queue data is lost. Every pending job, every in-flight job, every Horizon metric. When Redis restarts, the queues are empty.
+
+**RDB only:** Data is saved periodically (e.g., every 60 seconds if at least 1000 keys changed). A crash loses the last snapshot interval worth of jobs.
+
+**AOF with `appendfsync everysec`:** Data loss is limited to roughly one second of writes. This is the recommended setting for queue workloads.
+
+Check your current persistence configuration:
+
+```bash
+redis-cli config get save
+redis-cli config get appendonly
+redis-cli config get appendfsync
+```
+
+For production queue workloads, enable AOF:
+
+```bash
+redis-cli config set appendonly yes
+redis-cli config set appendfsync everysec
+```
+
+Make these changes persistent by updating `redis.conf`.
+
+## Handling Redis failover with Sentinel or Cluster
+
+If you use Redis Sentinel for high availability, Horizon can be configured to connect through Sentinel:
+
+```php
+// config/database.php
+'redis' => [
+    'client' => 'predis',
+    'default' => [
+        'tcp://sentinel1:26379',
+        'tcp://sentinel2:26379',
+        'tcp://sentinel3:26379',
+        'options' => [
+            'replication' => 'sentinel',
+            'service' => 'mymaster',
+        ],
+    ],
+],
+```
+
+During a failover, there's a brief window (typically 5-30 seconds) where the old master is down and the new master hasn't been promoted yet. Horizon workers will see connection errors during this window.
+
+After failover completes, workers reconnect to the new master automatically. The key concern is whether any jobs were lost during the promotion window. With AOF enabled on the replica, data loss is minimal.
+
+## Detecting Redis outages from the application
+
+Don't wait for the Horizon dashboard to tell you Redis is down. The dashboard itself depends on Redis. Add a health check that detects Redis connectivity issues independently:
+
+```php
+$schedule->call(function () {
+    try {
+        $start = microtime(true);
+        Redis::ping();
+        $latency = (microtime(true) - $start) * 1000;
+
+        if ($latency > 100) { // More than 100ms is suspicious
+            Log::warning('Redis latency elevated', [
+                'latency_ms' => round($latency, 2),
+            ]);
+        }
+    } catch (\Exception $e) {
+        Log::error('Redis connection failed', [
+            'exception' => $e->getMessage(),
+        ]);
+        // Alert immediately
+    }
+})->everyMinute();
+```
+
+The limitation: this scheduled check itself runs via `schedule:run`, which runs every minute. If Redis goes down and comes back within 60 seconds, you might miss it entirely.
+
+## Monitoring Redis health with Crontinel
+
+Crontinel monitors Redis connectivity and Horizon state on a 30-second polling interval, independent of your application's scheduler. When Redis drops, Crontinel detects the connection loss and alerts you before the Horizon dashboard has a chance to go blank.
+
+It also tracks Redis memory usage, connection count, and eviction rate, which are early warning signals for the kind of memory pressure that leads to OOM kills.
+
+```bash
+composer require harunrrayhan/crontinel
+php artisan crontinel:install
+```
+
+The [features page](https://crontinel.com/features) covers how Redis health metrics are collected and what thresholds trigger alerts.

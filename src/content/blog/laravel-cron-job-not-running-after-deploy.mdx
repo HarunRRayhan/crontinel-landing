@@ -1,0 +1,182 @@
+---
+title: "Laravel Cron Job Not Running After Deploy: Why It Happens and How to Catch It"
+description: "Your cron jobs worked before the deploy. Now they've stopped. The scheduler is silent, customers are complaining, and there's nothing in the logs. Here's why deploys break cron and how to detect it fast."
+date: 2026-04-07
+tags: ["laravel", "cron", "deployment"]
+---
+
+You deploy, run your smoke tests, ship the release notes, and go to lunch. Two hours later, a customer emails: their daily report never arrived. You check the scheduler, and it hasn't run since the deploy finished.
+
+This happens more often than anyone admits. Deploys interact with the cron system in subtle ways, and most deployment pipelines don't verify that scheduled tasks actually resume after a release.
+
+## The crontab entry gets wiped during provisioning
+
+If you use any infrastructure-as-code tool that rebuilds your server image or reprovisions the cron configuration, the crontab entry for `schedule:run` can disappear silently. Terraform, Ansible, and even Forge's server provisioning scripts can reset the crontab if the task definition isn't explicitly included.
+
+After every deploy, verify the crontab entry exists:
+
+```bash
+sudo crontab -u www-data -l | grep schedule:run
+```
+
+If that returns nothing, the entry is gone. Re-add it:
+
+```bash
+(sudo crontab -u www-data -l 2>/dev/null; echo "* * * * * cd /var/www/html && php artisan schedule:run >> /var/log/laravel-schedule.log 2>&1") | sudo crontab -u www-data -
+```
+
+A better approach: make the crontab entry part of your deploy script so it's re-applied every time.
+
+## Symlink-based deploys change the working directory
+
+Zero-downtime deploy tools like Envoyer and Deployer work by creating a new release directory and then swapping a `current` symlink to point at it. If your crontab entry uses the symlink path (`/var/www/html/current`), the `cd` resolves correctly after the swap. But if it uses a hardcoded release path (`/var/www/html/releases/42`), it points at stale code after the next deploy.
+
+Check what your crontab actually references:
+
+```bash
+sudo crontab -u www-data -l
+```
+
+You want to see the symlink path, not a release-specific path:
+
+```bash
+# Correct
+* * * * * cd /var/www/html/current && php artisan schedule:run >> /var/log/laravel-schedule.log 2>&1
+
+# Wrong — breaks on next deploy
+* * * * * cd /var/www/html/releases/42 && php artisan schedule:run >> /var/log/laravel-schedule.log 2>&1
+```
+
+## Config cache points to old paths
+
+Running `php artisan config:cache` during a deploy serializes all config values into a cached file. If the deploy creates a new release directory, the cached config might contain paths from the old release. Scheduled tasks that depend on `config('filesystems.disks.local.root')` or `storage_path()` can resolve to directories that no longer exist under the new release.
+
+The fix is ordering your deploy steps correctly:
+
+```bash
+# 1. Pull new code
+git pull origin main
+
+# 2. Install dependencies
+composer install --no-dev --optimize-autoloader
+
+# 3. Run migrations
+php artisan migrate --force
+
+# 4. Clear old cache FIRST
+php artisan config:clear
+
+# 5. Then rebuild cache from new code
+php artisan config:cache
+php artisan route:cache
+php artisan view:cache
+```
+
+If you cache config before the symlink swap, the cached paths point at the wrong directory.
+
+## PHP-FPM restarts kill running schedule:run processes
+
+When a deploy restarts PHP-FPM (which most do), any currently running `php artisan schedule:run` process gets terminated. If a scheduled task was mid-execution, it dies without completing.
+
+That's expected and usually fine. The problem comes when the FPM restart takes longer than expected, or when the restart fails entirely. If PHP-FPM doesn't come back, the next cron tick's `schedule:run` fails with a connection error or a missing socket, but the cron daemon still reports exit code 0 because the `cd` and `php` commands are separate.
+
+Check FPM status after a deploy:
+
+```bash
+sudo systemctl status php8.3-fpm
+```
+
+And verify a schedule:run can actually execute:
+
+```bash
+sudo -u www-data bash -c "cd /var/www/html/current && php artisan schedule:run --no-ansi"
+```
+
+## Composer autoload changes break class resolution
+
+If a deploy changes the namespace or class name of a scheduled command but the autoloader hasn't been regenerated, `schedule:run` will silently skip that task. The class can't be resolved, the scheduler logs nothing, and the task just doesn't appear in the schedule.
+
+Always run `composer dump-autoload` as part of your deploy:
+
+```bash
+composer install --no-dev --optimize-autoloader
+# This implicitly runs dump-autoload with classmap optimization
+```
+
+After a deploy, verify your schedule looks correct:
+
+```bash
+php artisan schedule:list
+```
+
+If a task you expect is missing from the output, the class isn't being resolved. Check the namespace and the autoload configuration in `composer.json`.
+
+## Building a post-deploy verification step
+
+Rather than checking each of these individually, build a single verification command that runs after every deploy:
+
+```php
+<?php
+
+namespace App\Console\Commands;
+
+use Illuminate\Console\Command;
+
+class VerifyDeployHealth extends Command
+{
+    protected $signature = 'deploy:verify';
+    protected $description = 'Verify cron and queue health after a deploy';
+
+    public function handle(): int
+    {
+        $failures = [];
+
+        // Check crontab entry exists
+        $crontab = shell_exec('crontab -l 2>/dev/null');
+        if (!str_contains($crontab ?? '', 'schedule:run')) {
+            $failures[] = 'Missing schedule:run crontab entry';
+        }
+
+        // Check schedule has expected tasks
+        $this->call('schedule:list');
+
+        // Check config cache is fresh
+        $cachedConfigPath = base_path('bootstrap/cache/config.php');
+        if (file_exists($cachedConfigPath)) {
+            $age = time() - filemtime($cachedConfigPath);
+            if ($age > 300) {
+                $failures[] = "Config cache is {$age}s old, may be stale";
+            }
+        }
+
+        if (!empty($failures)) {
+            foreach ($failures as $f) {
+                $this->error($f);
+            }
+            return Command::FAILURE;
+        }
+
+        $this->info('Deploy health checks passed.');
+        return Command::SUCCESS;
+    }
+}
+```
+
+Add it to the end of your deploy script:
+
+```bash
+php artisan deploy:verify || echo "DEPLOY HEALTH CHECK FAILED" && exit 1
+```
+
+## Catching deploy-related cron failures with Crontinel
+
+The post-deploy verification command is useful for catching immediate problems. But some failures surface later: a task that runs hourly won't be missed until the next hour passes.
+
+Crontinel tracks the expected frequency of every registered scheduled task and alerts you when a task misses its window. If your hourly report hasn't run within 75 minutes, you get a notification regardless of whether the deploy script reported success.
+
+```bash
+composer require harunrrayhan/crontinel
+php artisan crontinel:install
+```
+
+The missed-run detection works independently of the scheduler itself, so even if `schedule:run` is completely broken after a deploy, Crontinel's external polling catches the gap. See [crontinel.com/features](https://crontinel.com/features) for how missed-run windows are configured.

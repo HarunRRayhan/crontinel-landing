@@ -1,0 +1,180 @@
+---
+title: "Laravel Horizon Idle Workers While Jobs Pile Up: Common Causes"
+description: "Horizon shows workers sitting idle while your queue depth climbs. The dashboard says everything is healthy but jobs aren't moving. Here are the actual reasons this happens and how to fix each one."
+date: 2026-04-07
+tags: ["laravel", "horizon"]
+---
+
+You open the Horizon dashboard and see five idle workers. You check the queue and see 2,000 pending jobs. The workers are right there. The jobs are right there. Nothing is happening.
+
+This is one of the more frustrating Horizon failure modes because everything looks like it should be working. The processes exist, the queue has jobs, and yet throughput is zero.
+
+## Queue name mismatch
+
+The single most common cause. Workers are listening on `default`, but jobs are being dispatched to `high` or `emails` or a queue name you added last week. Horizon workers only process jobs from queues they're configured to listen on.
+
+Check your Horizon config:
+
+```php
+// config/horizon.php
+'environments' => [
+    'production' => [
+        'supervisor-1' => [
+            'connection' => 'redis',
+            'queue' => ['default'],  // Only listens on 'default'
+            'processes' => 5,
+        ],
+    ],
+],
+```
+
+Now check where your jobs are actually going:
+
+```php
+// In your job class
+public $queue = 'invoices';  // This goes to 'invoices', not 'default'
+```
+
+Or dispatched explicitly:
+
+```php
+ProcessInvoice::dispatch($invoice)->onQueue('invoices');
+```
+
+If no supervisor is configured to listen on `invoices`, those jobs sit forever. The fix is either changing the job's queue or adding a supervisor that listens on it:
+
+```php
+'supervisor-2' => [
+    'connection' => 'redis',
+    'queue' => ['invoices'],
+    'processes' => 3,
+],
+```
+
+After changing `horizon.php`, restart Horizon:
+
+```bash
+php artisan horizon:terminate
+```
+
+Supervisor (the process manager) will restart it automatically with the new config.
+
+## Connection mismatch
+
+Less obvious than queue name issues. If your job specifies a connection that differs from what the supervisor is configured to use, the job lands in a queue that no worker is watching.
+
+```php
+// Job dispatched on 'redis-long-running' connection
+ProcessReport::dispatch($report)->onConnection('redis-long-running');
+```
+
+```php
+// But the supervisor uses the default 'redis' connection
+'supervisor-1' => [
+    'connection' => 'redis',  // Different from 'redis-long-running'
+    'queue' => ['default'],
+],
+```
+
+These are separate Redis connections with separate queue lists. A worker on `redis` will never see jobs on `redis-long-running`. Check your `config/queue.php` connections and make sure your Horizon supervisors match.
+
+## The auto-balancer moved all processes away
+
+Horizon's `auto` balance strategy redistributes worker processes across queues based on queue depth. If one queue has zero jobs and another has thousands, the balancer moves workers to where the work is.
+
+The problem arises when the balancer runs, moves workers away from a queue, and then new jobs arrive on the now-empty queue. The balancer takes a few seconds to react, and during that window the queue has jobs but zero workers.
+
+In extreme cases, the balancer can oscillate: moving workers to queue A, jobs arrive on queue B, moving workers to B, jobs arrive on A.
+
+Check current worker distribution:
+
+```bash
+redis-cli hgetall "horizon:supervisor-name:workers"
+```
+
+If a supervisor shows zero processes allocated to a queue that has pending jobs, the balancer is the likely cause. You can switch from `auto` to `simple` balancing if the oscillation is causing problems:
+
+```php
+'supervisor-1' => [
+    'balance' => 'simple',  // Fixed distribution instead of auto
+    'processes' => 5,
+    'queue' => ['default', 'emails'],
+],
+```
+
+Or set minimum processes per queue using `balanceMinProcesses`:
+
+```php
+'supervisor-1' => [
+    'balance' => 'auto',
+    'minProcesses' => 1,
+    'maxProcesses' => 10,
+],
+```
+
+## Workers are stuck on a long-running job
+
+If a single job takes 30 minutes to complete and you have 5 workers, one of those workers is occupied the entire time. If several long-running jobs arrive at once, all workers can be busy simultaneously, and new jobs queue up behind them.
+
+Horizon shows these workers as "processing" rather than "idle," but the effect on queue throughput is the same: jobs pile up.
+
+Check what each worker is currently doing:
+
+```php
+use Laravel\Horizon\Contracts\WorkloadRepository;
+
+$workload = app(WorkloadRepository::class)->get();
+
+foreach ($workload as $queue) {
+    echo $queue->name . ': ' . $queue->length . ' pending, '
+        . $queue->processes . " workers\n";
+}
+```
+
+The fix depends on the situation. For legitimately long jobs, move them to a dedicated queue with its own supervisor so they don't block shorter jobs:
+
+```php
+// config/horizon.php
+'long-running' => [
+    'connection' => 'redis',
+    'queue' => ['reports'],
+    'processes' => 2,
+    'timeout' => 3600,
+],
+```
+
+For jobs that shouldn't be taking that long, add a `timeout` to the job class:
+
+```php
+public $timeout = 120; // Kill after 2 minutes
+```
+
+## Redis memory pressure causing silent drops
+
+When Redis runs out of memory and has `maxmemory-policy` set to something other than `noeviction`, it starts evicting keys to make room. Queue keys can be evicted, which means jobs disappear from the queue without being processed. Workers appear idle because the queue is technically empty from Redis's perspective, even though jobs were never completed.
+
+Check Redis memory usage:
+
+```bash
+redis-cli info memory | grep used_memory_human
+redis-cli config get maxmemory-policy
+```
+
+If the policy is `allkeys-lru` or `volatile-lru`, Redis will evict queue keys under memory pressure. For queue workloads, set the policy to `noeviction` so Redis returns an error on writes instead of silently dropping data:
+
+```bash
+redis-cli config set maxmemory-policy noeviction
+```
+
+## Monitoring for idle-but-jobs-pending with Crontinel
+
+The core problem here is that Horizon's dashboard shows worker count and queue depth as separate numbers. It doesn't alert you when the combination is wrong: workers exist, jobs exist, but throughput is zero.
+
+Crontinel correlates these metrics automatically. If queue depth is growing while worker throughput is flat, it fires an alert. That catches queue name mismatches, connection mismatches, stuck workers, and balancer issues, all from the same signal.
+
+```bash
+composer require harunrrayhan/crontinel
+php artisan crontinel:install
+```
+
+The [features page](https://crontinel.com/features) details how throughput correlation works across multiple supervisors and queues.

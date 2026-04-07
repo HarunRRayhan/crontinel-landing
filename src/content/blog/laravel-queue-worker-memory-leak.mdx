@@ -1,0 +1,208 @@
+---
+title: "Laravel Queue Worker Memory Leaks: Detect Them Before Workers Crash"
+description: "Queue workers run for hours or days. Memory climbs slowly until the process is killed. Here's how memory leaks happen in Laravel workers, how to detect them, and how to keep workers healthy without masking the real problem."
+date: 2026-04-07
+tags: ["laravel", "queues", "performance"]
+---
+
+Your queue worker starts at 40MB. Six hours later, it's at 380MB. Eight hours in, the OS kills it. Jobs that were mid-processing vanish. The worker restarts, climbs again, gets killed again. You've got a memory leak, and the only reason you haven't noticed is that Supervisor keeps restarting the process before anyone checks.
+
+Memory leaks in long-running Laravel queue workers are common and rarely dramatic. They don't crash your app instantly. They degrade it slowly, causing intermittent failures that are hard to reproduce and harder to trace.
+
+## Why queue workers leak memory
+
+Queue workers are long-running PHP processes. Unlike HTTP requests, which start fresh on every cycle, a worker persists state across hundreds or thousands of job executions. Any object that accumulates references without releasing them will grow the process's memory footprint over time.
+
+The most common sources:
+
+### Event listeners that accumulate state
+
+If a job registers an event listener that captures a reference to a large object (a collection, a model with eager-loaded relations), and that listener is never removed, the referenced object stays in memory for the lifetime of the worker.
+
+```php
+// This leaks if called inside a queued job
+Event::listen('order.processed', function ($order) {
+    // $order stays referenced for the life of the worker
+    Cache::put("last-order-{$order->id}", $order->total);
+});
+```
+
+The fix is to register listeners in a service provider (where they're set up once) rather than inside jobs. If you must register a listener per-job, remove it when the job completes.
+
+### Query log left enabled
+
+Laravel's query log stores every SQL query in memory when enabled. In an HTTP request, this is fine because the process ends after the response. In a queue worker, the log grows indefinitely.
+
+```php
+// Check if the query log is enabled
+DB::connection()->logging(); // true means it's accumulating queries
+
+// Disable it explicitly in your worker bootstrap
+DB::connection()->disableQueryLog();
+```
+
+If you're using Telescope or Debugbar in a way that enables the query log globally, that's your leak. Disable both in production worker contexts.
+
+### Eloquent model caching and identity maps
+
+Some packages implement identity maps or model caching that persist across job executions. Laravel itself doesn't do this by default, but packages that hook into Eloquent's `retrieved` or `booted` events can accumulate model references.
+
+Check your registered model observers. If any of them store references to models in static properties or collections, those references persist across jobs.
+
+## Detecting memory growth before the crash
+
+### The --memory flag
+
+Laravel's queue worker accepts a `--memory` flag that sets a soft limit in megabytes. When the worker exceeds this limit after completing a job, it exits gracefully so Supervisor can restart it.
+
+```bash
+php artisan queue:work --memory=128
+```
+
+This prevents the crash but masks the leak. The worker restarts before the OS kills it, which is better, but you're still burning memory and restarting processes unnecessarily.
+
+### Logging memory usage per job
+
+Add a middleware to your jobs that records memory usage:
+
+```php
+<?php
+
+namespace App\Jobs\Middleware;
+
+use Illuminate\Support\Facades\Log;
+
+class LogMemoryUsage
+{
+    public function handle(object $job, callable $next): void
+    {
+        $before = memory_get_usage(true);
+
+        $next($job);
+
+        $after = memory_get_usage(true);
+        $delta = $after - $before;
+
+        if ($delta > 5 * 1024 * 1024) { // More than 5MB growth
+            Log::warning('High memory delta in job', [
+                'job' => get_class($job),
+                'before_mb' => round($before / 1024 / 1024, 2),
+                'after_mb' => round($after / 1024 / 1024, 2),
+                'delta_mb' => round($delta / 1024 / 1024, 2),
+            ]);
+        }
+    }
+}
+```
+
+Apply it to jobs you suspect:
+
+```php
+public function middleware(): array
+{
+    return [new \App\Jobs\Middleware\LogMemoryUsage()];
+}
+```
+
+When the warning fires, you know which job class is responsible. The delta tells you how much memory that job leaked.
+
+### Tracking cumulative growth
+
+Per-job deltas help identify the worst offenders, but cumulative growth matters more. A job that leaks 200KB per execution doesn't look bad individually, but after 10,000 executions that's 2GB.
+
+Track the worker's total memory across its lifetime:
+
+```php
+// In a base job class or global middleware
+
+$currentUsage = memory_get_usage(true);
+$peakUsage = memory_get_peak_usage(true);
+
+if ($currentUsage > 200 * 1024 * 1024) { // 200MB threshold
+    Log::error('Worker memory critically high', [
+        'current_mb' => round($currentUsage / 1024 / 1024, 2),
+        'peak_mb' => round($peakUsage / 1024 / 1024, 2),
+        'pid' => getmypid(),
+    ]);
+}
+```
+
+## Practical fixes for common leaks
+
+### Clear model references explicitly
+
+After processing a job that loads large models or collections, unset them:
+
+```php
+public function handle(): void
+{
+    $orders = Order::with('items', 'payments')->where('status', 'pending')->get();
+
+    foreach ($orders as $order) {
+        $this->processOrder($order);
+    }
+
+    // Release the collection reference
+    unset($orders);
+}
+```
+
+This helps the garbage collector reclaim memory between jobs.
+
+### Use chunk processing instead of loading everything
+
+For jobs that process large datasets, use `chunk()` or `lazy()` instead of `get()`:
+
+```php
+public function handle(): void
+{
+    Order::where('status', 'pending')
+        ->chunk(100, function ($orders) {
+            foreach ($orders as $order) {
+                $this->processOrder($order);
+            }
+        });
+}
+```
+
+Each chunk is released when the callback completes, keeping memory bounded.
+
+### Restart workers on a schedule
+
+Even after fixing known leaks, long-running processes accumulate fragmented memory. Set up periodic restarts through Horizon's configuration:
+
+```php
+// config/horizon.php
+'environments' => [
+    'production' => [
+        'supervisor-1' => [
+            'connection' => 'redis',
+            'queue' => ['default'],
+            'memory' => 128,        // Soft limit in MB
+            'timeout' => 60,
+            'maxProcesses' => 10,
+        ],
+    ],
+],
+```
+
+Or use `queue:restart` on a schedule:
+
+```php
+$schedule->command('queue:restart')->hourly();
+```
+
+This terminates all workers gracefully after their current job finishes. Supervisor or Horizon restarts them fresh.
+
+## Monitoring memory trends with Crontinel
+
+Spotting a memory leak from log entries requires someone to actually read the logs. Crontinel tracks worker memory usage over time and alerts when the growth pattern indicates a leak, not just when a single threshold is crossed.
+
+The difference matters. A worker that jumps to 300MB because it processed a legitimately large batch is not a leak. A worker that climbs 5MB every minute for an hour is. Crontinel's trend detection distinguishes between the two and alerts on the pattern, not just the number.
+
+```bash
+composer require harunrrayhan/crontinel
+php artisan crontinel:install
+```
+
+See [crontinel.com/features](https://crontinel.com/features) for details on how worker health metrics are tracked.

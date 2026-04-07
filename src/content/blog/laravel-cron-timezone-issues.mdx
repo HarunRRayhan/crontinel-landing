@@ -1,0 +1,202 @@
+---
+title: "Laravel Cron Timezone Bugs: How ->timezone() Works and Where It Goes Wrong"
+description: "Your scheduled task runs at the right time in development and the wrong time in production. Here's how Laravel handles timezones in the scheduler, why ->timezone() doesn't work the way you expect, and how to debug offset issues."
+date: 2026-04-07
+tags: ["laravel", "cron", "scheduling"]
+---
+
+Your invoice job is supposed to run at midnight in each customer's timezone. You set `->timezone('America/New_York')` and it works in development. In production, the job fires at 4 AM Eastern during winter and 5 AM Eastern during summer. You spend an hour debugging before realizing the server's system timezone is UTC and daylight saving time is involved.
+
+Timezone handling in Laravel's scheduler is one of those features that appears simple but has several non-obvious failure modes.
+
+## How the scheduler evaluates time
+
+By default, `schedule:run` evaluates every task's cron expression against the application timezone, which is set in `config/app.php`:
+
+```php
+'timezone' => 'UTC',
+```
+
+When you define a task:
+
+```php
+$schedule->command('invoices:generate')->dailyAt('00:00');
+```
+
+That `00:00` is evaluated in the application timezone. If `config('app.timezone')` is `UTC`, the task runs at midnight UTC.
+
+## What ->timezone() actually does
+
+The `->timezone()` method overrides the evaluation timezone for a single task:
+
+```php
+$schedule->command('invoices:generate')
+    ->dailyAt('00:00')
+    ->timezone('America/New_York');
+```
+
+Now the scheduler evaluates `00:00` as midnight Eastern Time. Internally, Laravel converts the current time to the specified timezone and checks whether the cron expression matches.
+
+The code path looks roughly like this:
+
+```php
+// Simplified from Illuminate\Console\Scheduling\Event
+public function isDue($app): bool
+{
+    $date = Carbon::now();
+
+    if ($this->timezone) {
+        $date = $date->setTimezone($this->timezone);
+    }
+
+    return CronExpression::factory($this->expression)->isDue($date->toDateTimeString());
+}
+```
+
+The cron expression is matched against the local time in the specified timezone. The system clock doesn't change. Only the comparison shifts.
+
+## The DST trap
+
+Daylight saving time creates two problems:
+
+### 1. The skipped hour
+
+When clocks spring forward (e.g., 2:00 AM becomes 3:00 AM in US Eastern), any task scheduled between 2:00 and 2:59 in that timezone never fires. The hour doesn't exist.
+
+```php
+$schedule->command('nightly-cleanup')
+    ->dailyAt('02:30')
+    ->timezone('America/New_York');
+```
+
+On the second Sunday in March, this task doesn't run. There is no 2:30 AM that day. The scheduler checks at each minute tick, converts to Eastern, and the time jumps from 1:59 to 3:00. The `02:30` match never happens.
+
+### 2. The repeated hour
+
+When clocks fall back (e.g., 2:00 AM becomes 1:00 AM), any task scheduled between 1:00 and 1:59 in that timezone fires twice. The hour occurs twice.
+
+```php
+$schedule->command('billing:reconcile')
+    ->dailyAt('01:30')
+    ->timezone('America/New_York');
+```
+
+On the first Sunday in November, this runs at 1:30 AM EDT and again at 1:30 AM EST. If the task doesn't have `->withoutOverlapping()`, it processes twice. If it does have `->withoutOverlapping()`, the second run is silently skipped.
+
+Neither behavior is obviously correct. It depends on the task. The point is that you need to be aware of both cases.
+
+## Server timezone vs application timezone
+
+The system cron daemon runs on the server's system clock. If your server is set to UTC and your app timezone is `America/Chicago`:
+
+```bash
+# Server cron runs schedule:run every minute in UTC
+* * * * * cd /var/www/html && php artisan schedule:run
+```
+
+Laravel's scheduler converts from the server time to the app timezone for evaluation. This works correctly as long as the server's clock is accurate.
+
+The problem arises when someone changes the server timezone without restarting the cron daemon. Some cron implementations cache the timezone at startup. A timezone change requires restarting the cron service:
+
+```bash
+sudo timedatectl set-timezone UTC
+sudo systemctl restart cron
+```
+
+Check the server's timezone:
+
+```bash
+timedatectl
+```
+
+And the cron daemon's effective timezone:
+
+```bash
+grep -i timezone /etc/crontab 2>/dev/null
+```
+
+Some cron implementations support a `CRON_TZ` variable in the crontab. If set, it overrides the system timezone for that crontab:
+
+```bash
+CRON_TZ=UTC
+* * * * * cd /var/www/html && php artisan schedule:run >> /dev/null 2>&1
+```
+
+## Multi-timezone scheduling patterns
+
+If you need tasks to run at specific local times for different regions, define separate schedule entries:
+
+```php
+$schedule->command('reports:daily --region=us-east')
+    ->dailyAt('08:00')
+    ->timezone('America/New_York');
+
+$schedule->command('reports:daily --region=europe')
+    ->dailyAt('08:00')
+    ->timezone('Europe/London');
+
+$schedule->command('reports:daily --region=asia')
+    ->dailyAt('08:00')
+    ->timezone('Asia/Tokyo');
+```
+
+Each entry is evaluated independently. The US East report runs at 8 AM Eastern, the Europe report at 8 AM London time, and the Asia report at 8 AM Tokyo time.
+
+Avoid using UTC offsets like `+05:30` instead of named timezones. Named timezones handle DST automatically. Offsets don't:
+
+```php
+// Wrong: doesn't account for DST
+$schedule->command('reports:daily')
+    ->dailyAt('08:00')
+    ->timezone('+05:30');
+
+// Correct: handles DST automatically
+$schedule->command('reports:daily')
+    ->dailyAt('08:00')
+    ->timezone('Asia/Kolkata');
+```
+
+## Debugging timezone issues
+
+When a task runs at the wrong time, check these in order:
+
+```bash
+# 1. Server system timezone
+timedatectl
+
+# 2. PHP timezone
+php -r "echo date_default_timezone_get();"
+
+# 3. Laravel app timezone
+php artisan tinker --execute="echo config('app.timezone');"
+
+# 4. Current time in each timezone
+php artisan tinker --execute="echo now()->format('Y-m-d H:i:s T') . ' | ' . now()->timezone('America/New_York')->format('Y-m-d H:i:s T');"
+```
+
+If any of these disagree with your expectations, that's your problem. The most common mismatch is between the server timezone and the app timezone, where someone set `config('app.timezone')` to a local timezone but the server runs UTC.
+
+## A safer default: schedule everything in UTC
+
+The simplest way to avoid timezone bugs is to schedule everything in UTC and handle display-time conversion in your application logic:
+
+```php
+// Schedule at a fixed UTC time
+$schedule->command('reports:daily')->dailyAt('13:00');
+// This runs at 1 PM UTC, which is 8 AM Eastern during EST, 9 AM during EDT
+```
+
+The downside is that the "local time" shifts by an hour during DST transitions. If that matters for your use case (e.g., a report that must arrive in someone's inbox at exactly 8 AM local), you need per-timezone scheduling. If it doesn't matter (e.g., a background sync that just needs to run once a day), UTC is simpler and more predictable.
+
+## Monitoring for timezone-related missed runs
+
+Timezone bugs surface as missed runs: a task that should have fired at midnight local time didn't fire because the scheduler evaluated the wrong timezone. The task isn't broken. It just ran at the wrong time or didn't match at all.
+
+Crontinel tracks expected run times per task and alerts when a task misses its window, regardless of the cause. If a DST transition causes a task to skip, Crontinel catches the missed window and notifies you. It also logs the actual evaluation time versus the expected time, which makes timezone debugging significantly faster.
+
+```bash
+composer require harunrrayhan/crontinel
+php artisan crontinel:install
+```
+
+See [crontinel.com/features](https://crontinel.com/features) for how expected-run tracking handles timezone-aware schedules.

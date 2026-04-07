@@ -1,0 +1,184 @@
+---
+title: "Laravel withoutOverlapping() Deep Dive: When It Helps and When It Silently Kills Jobs"
+description: "withoutOverlapping() prevents duplicate task execution. It also silently skips tasks when the mutex gets stuck. Here's how the mutex works, where it breaks, and how to monitor for stuck locks."
+date: 2026-04-07
+tags: ["laravel", "scheduling"]
+---
+
+You add `->withoutOverlapping()` to a scheduled task because running two copies simultaneously would corrupt data. It works perfectly for months. Then one day the task stops running entirely. No errors, no logs, no alerts. The mutex is stuck, and every subsequent execution gets silently skipped.
+
+This post covers how `withoutOverlapping()` actually works, the specific conditions that cause stuck mutexes, and how to detect when a task is being skipped rather than executed.
+
+## How the mutex works
+
+When a scheduled task has `->withoutOverlapping()`, Laravel acquires a mutex (a lock) before the task runs and releases it when the task completes. If the lock already exists when the scheduler tries to run the task, it skips the execution entirely.
+
+The lock mechanism depends on your cache driver:
+
+```php
+// Under the hood, Laravel does roughly this:
+$mutexName = 'framework/schedule-' . sha1($task->mutexName());
+$expiresAt = $task->expiresAt ?? 1440; // default: 24 hours
+
+if (Cache::add($mutexName, true, $expiresAt)) {
+    // Run the task
+    // Release the mutex on completion
+} else {
+    // Skip silently
+}
+```
+
+The default expiration is 1440 minutes (24 hours). That means if a task crashes without releasing the mutex, it stays locked for a full day before the lock auto-expires.
+
+## When withoutOverlapping() is the right choice
+
+It's appropriate when concurrent execution would cause data corruption or duplicate side effects:
+
+- A task that generates and emails a daily report (two copies means two emails)
+- A task that syncs data from an external API using cursor-based pagination (two copies would process the same page twice)
+- A task that processes a batch of records by marking them as "in progress" (two copies would race on the same records)
+
+For these cases, skipping a duplicate execution is correct behavior. The task will run on the next scheduled cycle after the first execution completes.
+
+```php
+$schedule->command('reports:daily')
+    ->daily()
+    ->withoutOverlapping();
+```
+
+## When it silently kills tasks
+
+### The task crashes and the mutex is never released
+
+If a task throws an uncaught exception, exits due to a memory limit, or gets killed by the OS, the cleanup code that releases the mutex never runs. The lock stays in the cache until it expires.
+
+With the default 24-hour expiration, a task scheduled to run every five minutes will miss 288 executions before the lock clears.
+
+```php
+// A task that crashes leaves the mutex locked
+$schedule->command('sync:inventory')
+    ->everyFiveMinutes()
+    ->withoutOverlapping();
+
+// If sync:inventory segfaults, the next 288 runs are silently skipped
+```
+
+### Server restart leaves stale locks in Redis/Memcached
+
+If your cache driver is Redis or Memcached and the lock was set before a server restart, the lock persists across the restart. The new server instance tries to acquire the lock, finds it taken, and skips the task.
+
+File-based cache locks survive server restarts only if the storage directory persists. If you're using `/tmp` or a tmpfs mount, restarts clear the locks. If you're using `storage/framework/cache`, they survive.
+
+### The task takes longer than expected
+
+A task normally takes 3 minutes but occasionally takes 25 minutes during peak load. If it's scheduled every 5 minutes with `withoutOverlapping()`, the scheduler skips executions 2, 3, 4, and 5 while the first run is still going. Those aren't failures, they're intentional skips, but the effect is the same: work doesn't happen on time.
+
+## Reducing the lock duration
+
+The `expiresAt` parameter on `withoutOverlapping()` controls how long the mutex lives if it's never released:
+
+```php
+$schedule->command('sync:inventory')
+    ->everyFiveMinutes()
+    ->withoutOverlapping(10); // Lock expires after 10 minutes
+```
+
+Set this to slightly more than the task's worst-case execution time. If the task normally takes 3 minutes and occasionally takes 8, set the expiration to 10 or 15. That way a crash blocks at most two or three cycles instead of 288.
+
+## Detecting stuck mutexes
+
+The scheduler fires `ScheduledTaskSkipped` when a task is skipped due to `withoutOverlapping()`. Listen for it:
+
+```php
+use Illuminate\Console\Events\ScheduledTaskSkipped;
+
+Event::listen(ScheduledTaskSkipped::class, function ($event) {
+    Log::warning('Scheduled task skipped due to overlap', [
+        'command' => $event->task->getSummaryForDisplay(),
+        'skipped_at' => now()->toIso8601String(),
+    ]);
+});
+```
+
+A single skip is normal. Five consecutive skips for a task that runs every five minutes means something is stuck. Track the skip count and alert after a threshold:
+
+```php
+use Illuminate\Console\Events\ScheduledTaskSkipped;
+use Illuminate\Support\Facades\Cache;
+
+Event::listen(ScheduledTaskSkipped::class, function ($event) {
+    $key = 'task-skip-count:' . sha1($event->task->getSummaryForDisplay());
+    $count = Cache::increment($key);
+    Cache::put($key, $count, now()->addHours(1));
+
+    if ($count >= 3) {
+        Log::error('Task skipped 3+ times consecutively, possible stuck mutex', [
+            'command' => $event->task->getSummaryForDisplay(),
+            'consecutive_skips' => $count,
+        ]);
+
+        // Send alert
+    }
+});
+```
+
+Reset the counter when the task actually runs:
+
+```php
+use Illuminate\Console\Events\ScheduledTaskFinished;
+
+Event::listen(ScheduledTaskFinished::class, function ($event) {
+    $key = 'task-skip-count:' . sha1($event->task->getSummaryForDisplay());
+    Cache::forget($key);
+});
+```
+
+## Manually clearing a stuck mutex
+
+If you've confirmed the mutex is stuck, clear it directly. For the cache driver:
+
+```bash
+php artisan tinker
+>>> Cache::forget('framework/schedule-' . sha1('App\\Console\\Commands\\SyncInventory'));
+```
+
+The mutex name is a SHA1 hash of the command's expression. Finding the exact string can be annoying. A quicker approach if you're using Redis:
+
+```bash
+redis-cli keys "framework/schedule-*"
+redis-cli del "framework/schedule-abc123def456..."
+```
+
+For the file cache driver, delete the cached file directly from `storage/framework/cache/data/`.
+
+## An alternative: onOneServer() vs withoutOverlapping()
+
+If you're running multiple servers and the concern is duplicate execution across servers (not duplicate execution on the same server), `onOneServer()` is the correct tool:
+
+```php
+$schedule->command('reports:daily')
+    ->daily()
+    ->onOneServer();
+```
+
+`onOneServer()` uses a cache-based lock to ensure only one server runs the task. It has the same stuck-mutex risks as `withoutOverlapping()`, but solves a different problem. You can combine both:
+
+```php
+$schedule->command('reports:daily')
+    ->daily()
+    ->onOneServer()
+    ->withoutOverlapping(30);
+```
+
+## Monitoring skipped tasks with Crontinel
+
+Building skip-count tracking and stuck-mutex detection from event listeners works, but it's one more piece of infrastructure to maintain. Crontinel tracks `ScheduledTaskSkipped` events automatically and alerts when a task's skip count exceeds a configurable threshold.
+
+It also distinguishes between healthy skips (a task is intentionally overlapping because it ran long once) and stuck mutexes (a task hasn't completed in 3x its normal runtime). That distinction matters because alerting on every skip creates noise, while alerting only on stuck mutexes catches real problems.
+
+```bash
+composer require harunrrayhan/crontinel
+php artisan crontinel:install
+```
+
+See [crontinel.com/features](https://crontinel.com/features) for details on how task-level skip tracking works.

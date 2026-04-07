@@ -1,0 +1,209 @@
+---
+title: "Queue Backpressure in Laravel: When Depth Spikes and Jobs Start Timing Out"
+description: "Your queue depth is climbing, jobs are timing out, and retries are making it worse. Here's how backpressure builds in Laravel queues, why it cascades, and what to do before the system falls over."
+date: 2026-04-07
+tags: ["laravel", "queues", "performance"]
+---
+
+It starts slowly. Queue depth goes from 50 to 200. Processing time per job increases from 500ms to 3 seconds. Jobs start hitting their timeout limit. Failed jobs get retried, adding to the queue. Depth climbs to 2,000. Workers are fully saturated. New jobs wait 15 minutes before a worker even picks them up. Customers notice.
+
+This is backpressure: the queue is receiving work faster than workers can process it. In Laravel's queue system, backpressure doesn't produce a clean error. It manifests as growing latency, cascading timeouts, and retry storms.
+
+## How backpressure builds
+
+Under normal conditions, jobs are dispatched and processed at roughly the same rate. Queue depth hovers near zero. When something disrupts the processing side (slower database, unresponsive external API, fewer workers after a deploy), the dispatch rate stays the same but the drain rate drops. The gap between dispatch and drain is your backpressure.
+
+The math is straightforward:
+
+```
+depth_growth_per_minute = dispatch_rate - drain_rate
+```
+
+If you dispatch 100 jobs/minute and process 80 jobs/minute, depth grows by 20 per minute. After an hour, you have 1,200 extra jobs in the queue. After two hours, 2,400.
+
+The problem accelerates because backpressure creates its own secondary effects.
+
+## The cascade: timeouts create retries create more backpressure
+
+When queue depth grows, the time between dispatch and processing increases. A job dispatched at 10:00 AM might not get picked up until 10:15 AM. If that job calls an external API with a 30-second timeout, and the API is the reason processing slowed down in the first place, the job times out and fails.
+
+Failed jobs with retries go back into the queue:
+
+```php
+class ProcessWebhook implements ShouldQueue
+{
+    public int $tries = 3;
+    public array $backoff = [60, 300, 900];
+
+    public function handle(): void
+    {
+        Http::timeout(30)->post($this->url, $this->payload);
+    }
+}
+```
+
+Each retry adds another job to the queue. If 40% of jobs are failing and retrying 3 times, the effective queue input rate is 40% higher than the actual dispatch rate. That makes the backpressure worse, which causes more timeouts, which causes more retries.
+
+This is the cascading failure pattern that turns a minor slowdown into a full outage.
+
+## Detecting backpressure early
+
+Queue depth alone isn't enough. A depth of 500 might be normal during a batch import and catastrophic during normal operation. Track these three metrics together:
+
+### 1. Oldest job age
+
+The age of the oldest pending job tells you how long the queue is taking to drain. This maps directly to user-perceived latency.
+
+```php
+use Illuminate\Support\Facades\Redis;
+
+function oldestJobAge(string $queue = 'default'): ?float
+{
+    $raw = Redis::lindex("queues:{$queue}", -1);
+    if (!$raw) return null;
+
+    $payload = json_decode($raw, true);
+    $pushed = $payload['pushedAt'] ?? null;
+    if (!$pushed) return null;
+
+    return microtime(true) - $pushed;
+}
+```
+
+An oldest job age over 60 seconds on a queue that normally processes in under 5 seconds is an early warning.
+
+### 2. Throughput trend
+
+Compare the current 5-minute throughput against the 5-minute throughput from the same time yesterday. A significant drop means workers are struggling.
+
+```php
+// If using Horizon, check throughput via Redis
+$currentBucket = Redis::hget('horizon:completed-jobs', $currentTimeBucket);
+$yesterdayBucket = Redis::hget('horizon:completed-jobs', $yesterdayTimeBucket);
+```
+
+### 3. Failure rate
+
+Track the number of failures per minute. A rising failure rate during a depth spike confirms the cascade pattern.
+
+## Strategies for handling backpressure
+
+### Rate-limit job dispatch
+
+If you control the dispatch side, throttle it when the queue is deep:
+
+```php
+use Illuminate\Support\Facades\Redis;
+
+function dispatchWithBackpressureCheck(ShouldQueue $job, string $queue = 'default'): void
+{
+    $depth = (int) Redis::llen("queues:{$queue}");
+
+    if ($depth > 1000) {
+        // Store for later dispatch or reject
+        Log::warning('Queue backpressure, delaying dispatch', [
+            'job' => get_class($job),
+            'queue' => $queue,
+            'depth' => $depth,
+        ]);
+        return;
+    }
+
+    dispatch($job)->onQueue($queue);
+}
+```
+
+This is a blunt instrument but it prevents the queue from growing unboundedly. The jobs you skip need to be handled eventually, so store them in a separate staging table or dispatch them with a significant delay.
+
+### Reduce retry attempts during incidents
+
+Jobs that fail due to external service outages don't benefit from immediate retries. They just add to the backpressure. Use exponential backoff with longer intervals:
+
+```php
+public int $tries = 3;
+public array $backoff = [300, 900, 3600]; // 5min, 15min, 1hr
+```
+
+Or make retry behavior conditional:
+
+```php
+public function retryUntil(): \DateTime
+{
+    return now()->addHours(2);
+}
+```
+
+This stops retries after 2 hours instead of burning through all attempts quickly.
+
+### Scale workers dynamically
+
+If you're on infrastructure that supports it, add workers when depth exceeds a threshold. With Horizon's auto-scaling:
+
+```php
+// config/horizon.php
+'supervisor-1' => [
+    'balance' => 'auto',
+    'minProcesses' => 3,
+    'maxProcesses' => 20,
+],
+```
+
+Horizon's auto-balancer scales processes up when queues have work and scales down when they're idle. The limitation is that it only scales within the configured range on a single server. For horizontal scaling across multiple servers, you need an external orchestrator.
+
+### Circuit-break failing external calls
+
+If the backpressure originates from a slow external service, stop calling it:
+
+```php
+use Illuminate\Support\Facades\Cache;
+
+function isCircuitOpen(string $service): bool
+{
+    return Cache::get("circuit:{$service}:open", false);
+}
+
+function recordFailure(string $service): void
+{
+    $key = "circuit:{$service}:failures";
+    $count = Cache::increment($key);
+    Cache::put($key, $count, now()->addMinutes(5));
+
+    if ($count >= 10) {
+        Cache::put("circuit:{$service}:open", true, now()->addMinutes(2));
+    }
+}
+```
+
+In your job:
+
+```php
+public function handle(): void
+{
+    if (isCircuitOpen('payment-gateway')) {
+        $this->release(120); // Put back on queue, try again in 2 minutes
+        return;
+    }
+
+    try {
+        Http::timeout(15)->post($this->url, $this->payload);
+    } catch (ConnectionException $e) {
+        recordFailure('payment-gateway');
+        throw $e;
+    }
+}
+```
+
+The circuit breaker prevents workers from wasting time on calls that are going to fail, which preserves processing capacity for jobs that can succeed.
+
+## Monitoring backpressure with Crontinel
+
+The three metrics that matter for backpressure detection (oldest job age, throughput trend, failure rate) need to be correlated to produce useful alerts. A depth spike alone isn't actionable. A depth spike with rising failure rate and falling throughput is.
+
+Crontinel correlates these metrics across all your queues and alerts when the combination indicates backpressure is building. It also tracks whether the queue is recovering (depth decreasing, throughput rising) or deteriorating (depth increasing, throughput flat or falling), so you know whether to intervene or wait.
+
+```bash
+composer require harunrrayhan/crontinel
+php artisan crontinel:install
+```
+
+See [crontinel.com/features](https://crontinel.com/features) for how queue health scoring works across multiple signals.

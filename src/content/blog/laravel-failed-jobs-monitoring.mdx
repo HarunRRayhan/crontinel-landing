@@ -1,0 +1,210 @@
+---
+title: "Failed Jobs in Laravel: Beyond the failed_jobs Table"
+description: "The failed_jobs table tells you a job died. It doesn't tell you if the failure rate is climbing, which queue is affected, or whether anyone is retrying them. Here's what actually needs alerting."
+date: 2026-04-07
+tags: ["laravel", "queues", "monitoring"]
+---
+
+Every Laravel app with a queue has a `failed_jobs` table. Most teams check it when something breaks, retry the jobs, truncate the table, and move on. That workflow has two problems: you only look at it reactively, and the table itself doesn't give you the signals you need to prevent the next outage.
+
+The `failed_jobs` table is a record of what happened. Monitoring is about catching what's happening right now. Those are different problems that require different tools.
+
+## What the failed_jobs table actually stores
+
+When a job exhausts all its retry attempts, Laravel calls the `failed()` method on the job class and writes a record to the `failed_jobs` table:
+
+```php
+Schema::create('failed_jobs', function (Blueprint $table) {
+    $table->id();
+    $table->string('uuid')->unique();
+    $table->text('connection');
+    $table->text('queue');
+    $table->longText('payload');
+    $table->longText('exception');
+    $table->timestamp('failed_at')->useCurrent();
+});
+```
+
+The `exception` column contains the full stack trace. The `payload` column contains the serialized job with all its properties. The `queue` and `connection` columns tell you where the job was running.
+
+What it does not contain: how many times the job was retried before failing, how long each attempt took, whether the failure rate on that queue is unusual, or whether anyone has acknowledged the failure.
+
+## Failure rate matters more than failure count
+
+A `failed_jobs` table with 200 rows is meaningless without context. If those 200 failures accumulated over six months across millions of successful jobs, your system is healthy. If they all arrived in the last 30 minutes, something is very wrong.
+
+Track failure rate, not just count:
+
+```php
+use Illuminate\Support\Facades\DB;
+
+function getFailureRate(string $queue, int $minutes = 30): int
+{
+    return DB::table('failed_jobs')
+        ->where('queue', $queue)
+        ->where('failed_at', '>=', now()->subMinutes($minutes))
+        ->count();
+}
+```
+
+Schedule a check that compares the current failure rate against a threshold:
+
+```php
+$schedule->call(function () {
+    $queues = ['default', 'emails', 'invoices'];
+
+    foreach ($queues as $queue) {
+        $failures = getFailureRate($queue, 30);
+
+        if ($failures > 10) {
+            Log::error("High failure rate on queue: {$queue}", [
+                'failures_last_30m' => $failures,
+            ]);
+            // Send alert
+        }
+    }
+})->everyFiveMinutes();
+```
+
+## Grouping failures by exception type
+
+When failures spike, you need to know if it's one problem or ten. Grouping by exception class and message tells you instantly:
+
+```sql
+SELECT
+    SUBSTRING_INDEX(exception, ':', 1) AS exception_class,
+    queue,
+    COUNT(*) AS count,
+    MIN(failed_at) AS first_seen,
+    MAX(failed_at) AS last_seen
+FROM failed_jobs
+WHERE failed_at >= NOW() - INTERVAL 1 HOUR
+GROUP BY exception_class, queue
+ORDER BY count DESC;
+```
+
+In PHP:
+
+```php
+$grouped = DB::table('failed_jobs')
+    ->select(
+        DB::raw("SUBSTRING_INDEX(exception, ':', 1) as exception_class"),
+        'queue',
+        DB::raw('COUNT(*) as count')
+    )
+    ->where('failed_at', '>=', now()->subHour())
+    ->groupBy('exception_class', 'queue')
+    ->orderByDesc('count')
+    ->get();
+```
+
+If 95% of failures are `GuzzleHttp\Exception\ConnectException`, you have an external service outage. If failures are spread across multiple exception types, you probably have a code regression.
+
+## The failed() method on job classes
+
+Laravel calls `failed()` on the job instance when it permanently fails. This is the right place for job-specific cleanup and notification:
+
+```php
+<?php
+
+namespace App\Jobs;
+
+use App\Models\Invoice;
+use Illuminate\Bus\Queueable;
+use Illuminate\Contracts\Queue\ShouldQueue;
+use Illuminate\Queue\InteractsWithQueue;
+use Illuminate\Queue\SerializesModels;
+
+class ProcessInvoice implements ShouldQueue
+{
+    use InteractsWithQueue, Queueable, SerializesModels;
+
+    public int $tries = 3;
+    public array $backoff = [30, 60, 120];
+
+    public function __construct(
+        public Invoice $invoice
+    ) {}
+
+    public function handle(): void
+    {
+        // Process the invoice
+    }
+
+    public function failed(\Throwable $exception): void
+    {
+        // Mark the invoice as needing manual review
+        $this->invoice->update(['status' => 'failed']);
+
+        // Notify the team
+        Log::error('Invoice processing failed permanently', [
+            'invoice_id' => $this->invoice->id,
+            'exception' => $exception->getMessage(),
+            'attempts' => $this->attempts(),
+        ]);
+    }
+}
+```
+
+The problem: `failed()` only runs when the job has exhausted all retries. It doesn't run on intermediate failures. If a job fails once, succeeds on retry, and you want to know about that transient failure, `failed()` won't help.
+
+## Listening for all failure events globally
+
+For system-wide failure monitoring, listen to the `JobFailed` event:
+
+```php
+use Illuminate\Queue\Events\JobFailed;
+use Illuminate\Support\Facades\Event;
+
+Event::listen(JobFailed::class, function (JobFailed $event) {
+    Log::error('Job failed', [
+        'job' => $event->job->resolveName(),
+        'queue' => $event->job->getQueue(),
+        'connection' => $event->connectionName,
+        'exception' => $event->exception->getMessage(),
+    ]);
+});
+```
+
+This fires on every failure, including intermediate retries. That's useful for tracking the overall failure rate but can be noisy for jobs with high retry counts.
+
+## Stale failed jobs are their own problem
+
+Failed jobs that sit in the table for weeks are effectively dead. Nobody is going to retry a two-week-old invoice processing job because the context has changed: the invoice might have been regenerated, the customer might have been refunded, the underlying data might have been modified.
+
+Set a retention policy. Either clean up old failures automatically:
+
+```php
+$schedule->command('queue:prune-failed --hours=72')->daily();
+```
+
+Or build a review workflow that requires someone to explicitly acknowledge and discard old failures. The worst outcome is a `failed_jobs` table with 50,000 rows that nobody looks at because the signal-to-noise ratio is zero.
+
+## What needs alerting vs what needs a dashboard
+
+Not every failure needs an alert. A single job failing once on a non-critical queue is noise. What needs immediate alerting:
+
+- Failure rate on any queue exceeds 2x its normal baseline
+- A job class that never fails starts failing
+- Failed job count on a critical queue (payments, invoices) goes above zero
+- No failures are being retried or acknowledged for more than 24 hours
+
+What needs a dashboard (reviewed daily, not alerted):
+
+- Total failure count by queue over the last 7 days
+- Most common exception types
+- Average retry count before permanent failure
+- Failed jobs awaiting retry
+
+## How Crontinel handles failed job monitoring
+
+Building failure rate tracking, exception grouping, and baseline comparison from scratch is several hundred lines of code plus ongoing maintenance. Crontinel tracks failure rates per queue, groups by exception type, and alerts when the rate deviates from the established baseline.
+
+It also tracks retry behavior: how many jobs succeed on retry versus failing permanently, and whether the retry success rate is changing over time. A sudden drop in retry success rate often indicates a systemic issue (database connection problems, external API changes) rather than a code bug.
+
+```bash
+composer require harunrrayhan/crontinel
+php artisan crontinel:install
+```
+
+The [features page](https://crontinel.com/features) covers how failure rate baselines are calculated and what alert thresholds are configurable.

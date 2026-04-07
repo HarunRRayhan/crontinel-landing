@@ -1,0 +1,224 @@
+---
+title: "Monitoring Custom Artisan Commands in Production: Patterns That Work"
+description: "Custom Artisan commands run critical business logic but are invisible to most monitoring setups. Here's how to instrument them for observability: exit codes, duration tracking, heartbeats, and alerting on silent failures."
+date: 2026-04-07
+tags: ["laravel", "monitoring", "artisan"]
+---
+
+You have an Artisan command that reconciles billing data every night. It's been running for two years. Nobody has ever checked whether it actually completes correctly. Last week it started silently returning empty results because an API credential expired, and nobody noticed for five days.
+
+Custom Artisan commands are the blind spot in most Laravel monitoring setups. They're not HTTP requests, so APM tools don't trace them. They're not queued jobs, so Horizon doesn't track them. They run via the scheduler or manually, produce no output by default, and fail silently unless someone explicitly instruments them.
+
+## The baseline: exit codes matter
+
+The first thing to get right is exit codes. Laravel Artisan commands return `Command::SUCCESS` (0) or `Command::FAILURE` (1). The scheduler uses this to determine whether a task succeeded.
+
+```php
+<?php
+
+namespace App\Console\Commands;
+
+use Illuminate\Console\Command;
+
+class ReconcileBilling extends Command
+{
+    protected $signature = 'billing:reconcile';
+    protected $description = 'Reconcile billing records with payment gateway';
+
+    public function handle(): int
+    {
+        try {
+            $reconciled = $this->reconcile();
+
+            if ($reconciled === 0) {
+                $this->warn('No records to reconcile. Check API credentials.');
+                return Command::FAILURE;
+            }
+
+            $this->info("Reconciled {$reconciled} records.");
+            return Command::SUCCESS;
+
+        } catch (\Exception $e) {
+            $this->error("Reconciliation failed: {$e->getMessage()}");
+            report($e);
+            return Command::FAILURE;
+        }
+    }
+}
+```
+
+Two things to note. First, returning `FAILURE` for "no records" is a deliberate choice. If the command normally processes records and suddenly finds zero, that's a signal worth investigating. Second, catching exceptions and returning `FAILURE` ensures the scheduler's `onFailure` callback fires.
+
+If your command catches exceptions but returns `SUCCESS`, the scheduler thinks everything is fine. The `ScheduledTaskFailed` event never fires. Monitoring sees a clean run.
+
+## Duration tracking
+
+A command that normally takes 3 minutes but suddenly takes 45 minutes is a problem even if it succeeds. Track execution duration inside the command:
+
+```php
+public function handle(): int
+{
+    $start = microtime(true);
+
+    try {
+        $this->doWork();
+
+        $duration = microtime(true) - $start;
+        $this->logExecution('success', $duration);
+
+        if ($duration > 600) { // 10 minutes
+            Log::warning('billing:reconcile took unusually long', [
+                'duration_seconds' => round($duration, 2),
+            ]);
+        }
+
+        return Command::SUCCESS;
+
+    } catch (\Exception $e) {
+        $duration = microtime(true) - $start;
+        $this->logExecution('failed', $duration, $e->getMessage());
+        report($e);
+        return Command::FAILURE;
+    }
+}
+
+private function logExecution(string $status, float $duration, ?string $error = null): void
+{
+    Log::channel('commands')->info('Command execution', [
+        'command' => 'billing:reconcile',
+        'status' => $status,
+        'duration_seconds' => round($duration, 2),
+        'error' => $error,
+        'ran_at' => now()->toIso8601String(),
+    ]);
+}
+```
+
+With a dedicated `commands` log channel, you can review execution history without digging through the main application log.
+
+## Structured output instead of silent runs
+
+Most Artisan commands use `$this->info()` and `$this->error()` for output. That's fine for interactive use but invisible in production where nobody is watching the terminal.
+
+Pair console output with structured logging:
+
+```php
+public function handle(): int
+{
+    $stats = [
+        'processed' => 0,
+        'skipped' => 0,
+        'errors' => 0,
+    ];
+
+    foreach ($this->getRecords() as $record) {
+        try {
+            $this->process($record);
+            $stats['processed']++;
+        } catch (SkippableException $e) {
+            $stats['skipped']++;
+        } catch (\Exception $e) {
+            $stats['errors']++;
+            report($e);
+        }
+    }
+
+    // Console output for interactive runs
+    $this->table(
+        ['Processed', 'Skipped', 'Errors'],
+        [[$stats['processed'], $stats['skipped'], $stats['errors']]]
+    );
+
+    // Structured log for monitoring
+    Log::channel('commands')->info('billing:reconcile completed', $stats);
+
+    // Fail if error rate is too high
+    $total = array_sum($stats);
+    if ($total > 0 && ($stats['errors'] / $total) > 0.1) {
+        $this->error('Error rate exceeded 10%');
+        return Command::FAILURE;
+    }
+
+    return Command::SUCCESS;
+}
+```
+
+The structured log entry can be picked up by log aggregation tools (Better Stack, Datadog Logs, CloudWatch) and used to build dashboards or alerts.
+
+## Heartbeat pattern for long-running commands
+
+For commands that run for extended periods (data imports, batch processing), a heartbeat lets you detect stalls mid-execution rather than waiting for the command to time out.
+
+```php
+public function handle(): int
+{
+    $lastHeartbeat = time();
+
+    foreach ($this->getLargeDataset() as $index => $item) {
+        $this->processItem($item);
+
+        // Heartbeat every 60 seconds
+        if (time() - $lastHeartbeat >= 60) {
+            $this->sendHeartbeat($index);
+            $lastHeartbeat = time();
+        }
+    }
+
+    return Command::SUCCESS;
+}
+
+private function sendHeartbeat(int $progress): void
+{
+    Cache::put('command:data-import:heartbeat', [
+        'progress' => $progress,
+        'updated_at' => now()->toIso8601String(),
+    ], now()->addMinutes(5));
+}
+```
+
+A separate monitoring process can check the heartbeat cache key. If `updated_at` is more than 2 minutes old during a known execution window, the command is stalled.
+
+## Scheduling with proper failure callbacks
+
+When running Artisan commands via the scheduler, wire up both success and failure handling:
+
+```php
+$schedule->command('billing:reconcile')
+    ->dailyAt('02:00')
+    ->withoutOverlapping(30)
+    ->onSuccess(function () {
+        Log::info('billing:reconcile completed successfully');
+    })
+    ->onFailure(function () {
+        Log::error('billing:reconcile failed');
+        Notification::route('slack', config('services.slack.webhook'))
+            ->notify(new CommandFailedNotification('billing:reconcile'));
+    })
+    ->appendOutputTo(storage_path('logs/billing-reconcile.log'));
+```
+
+The `appendOutputTo` call captures the command's console output to a file. Combined with the `onFailure` callback, you get both alerting and debugging data.
+
+## Treating Artisan commands as first-class monitored tasks
+
+The pattern that works best in production is treating every critical Artisan command the same way you'd treat a queued job: tracked, measured, and alerted on. The minimum instrumentation for a production command is:
+
+1. Explicit exit codes (FAILURE for any abnormal condition)
+2. Duration logging with anomaly thresholds
+3. Structured output logged to a dedicated channel
+4. Scheduler callbacks for failure notification
+
+## Automating command monitoring with Crontinel
+
+Instrumenting each command individually works but scales poorly. Every new command needs the same boilerplate. Every threshold needs manual tuning. If someone forgets to add the logging middleware to a new command, it runs unmonitored.
+
+Crontinel hooks into the scheduler's `ScheduledTaskFinished` and `ScheduledTaskFailed` events globally, capturing exit codes and durations for every registered command without per-command instrumentation. It tracks duration baselines per command and alerts when execution time deviates significantly from the norm.
+
+For long-running commands, Crontinel's heartbeat tracking works without modifying the command itself. Register the command's expected runtime and Crontinel alerts if the task doesn't complete within that window.
+
+```bash
+composer require harunrrayhan/crontinel
+php artisan crontinel:install
+```
+
+See [crontinel.com/features](https://crontinel.com/features) for details on how per-command duration baselines and heartbeat monitoring are configured.
