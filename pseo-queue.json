@@ -1,7 +1,5 @@
 {
   "pending": [
-    "queue-restart",
-    "queue-retry",
     "queue-monitor",
     "queue-flush",
     "queue-forget",
@@ -53,6 +51,8 @@
   ],
   "completed": [
     "schedule-run",
-    "queue-work"
+    "queue-work",
+    "queue-restart",
+    "queue-retry"
   ]
 }

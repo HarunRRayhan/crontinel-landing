@@ -1,0 +1,89 @@
+---
+title: "Monitoring queue:restart in Laravel Production"
+description: "Monitor Laravel's queue:restart command in production with instant alerts for failures, missed runs, and slow execution using Crontinel."
+date: 2026-04-07
+---
+
+Running `queue:restart` in production seems harmless until you realize it does not actually restart your workers. It sets a flag in cache that tells each worker to terminate after finishing its current job. If your cache driver is misconfigured, if a worker is stuck on a long-running job, or if your process manager fails to bring workers back, you end up with zero active workers and a queue that silently fills up.
+
+This is not a hypothetical. It happens when teams deploy new code and run `php artisan queue:restart` as part of their deployment script, assuming workers will bounce back immediately. Sometimes they do. Sometimes they don't.
+
+## What queue:restart Actually Does
+
+The command writes a timestamp to your application's cache under the key `illuminate:queue:restart`. Each worker checks this value between jobs. If the cached timestamp is newer than when the worker started, the worker terminates itself gracefully.
+
+```bash
+php artisan queue:restart
+```
+
+That's it. There is no "restart" happening. It is a "signal all workers to stop." The actual restart depends entirely on your process manager: Supervisor, systemd, Laravel Forge, or whatever you use to keep workers alive.
+
+In Laravel 10 through 12, this behavior has remained consistent. The worker's `stopIfNecessary` method compares the cache timestamp on every loop iteration. If you are running `--timeout=0` or processing a job that takes 30 minutes, the worker will not see the restart signal until that job completes.
+
+## Common Failure Modes
+
+**Cache driver mismatch.** If your queue workers use a different cache store than the process that runs `queue:restart`, the signal never reaches them. This is easy to trigger when your web process uses Redis but your workers default to `file` cache due to a missing environment variable.
+
+**Process manager not restarting workers.** Supervisor's `autorestart=true` is the default, but if someone set `autorestart=unexpected` or the worker exits with a code that Supervisor treats as "expected," workers stay dead. Same applies to systemd units without `Restart=always`.
+
+**Long-running jobs blocking the signal.** A worker processing a video encoding job for 20 minutes will not check the restart flag until it finishes. During that window, you might assume the restart already happened and begin investigating phantom issues.
+
+**Multiple server deploys with race conditions.** If you run `queue:restart` on server A but workers also run on server B with a separate cache, server B's workers never receive the signal. This is common in horizontally scaled setups where teams forget that cache locality matters.
+
+## Verifying Workers Actually Came Back
+
+After running `queue:restart`, you need to confirm that workers are alive and processing. The simplest approach:
+
+```bash
+# Check Supervisor status
+sudo supervisorctl status laravel-worker:*
+
+# Verify workers are actually pulling jobs
+php artisan queue:monitor redis:default --max=100
+```
+
+The `queue:monitor` command (available since Laravel 10) reports the size of specified queues. If the size keeps growing after a restart, your workers are not back.
+
+You can also dispatch a health-check job immediately after restart:
+
+```php
+// In your deployment script
+Artisan::call('queue:restart');
+
+// Dispatch a canary job that logs when processed
+dispatch(new QueueHealthCheck)->onQueue('default');
+```
+
+If `QueueHealthCheck` does not execute within a reasonable window, your workers did not recover.
+
+## Automating Restart Monitoring
+
+Manual verification does not scale. In a production environment with multiple queues across several servers, you need automated checks that confirm workers recovered after every restart.
+
+This is where a tool like [Crontinel](https://crontinel.com) fits naturally. Rather than scripting your own health checks and parsing Supervisor output, Crontinel monitors your queue workers continuously and alerts you when worker counts drop or when queues start backing up after a restart. It catches the exact failure modes described above: workers that exited but never came back, queues growing because no one is processing them, and restart signals that never reached all your servers.
+
+## Deployment Script Best Practices
+
+A safer deployment sequence looks like this:
+
+```bash
+php artisan config:cache
+php artisan route:cache
+php artisan queue:restart
+
+# Wait for workers to cycle (adjust based on your longest job timeout)
+sleep 15
+
+# Verify worker count matches expected
+WORKER_COUNT=$(sudo supervisorctl status laravel-worker:* | grep -c RUNNING)
+if [ "$WORKER_COUNT" -lt 2 ]; then
+    echo "WARNING: Only $WORKER_COUNT workers running after restart"
+    # Send alert to your monitoring channel
+fi
+```
+
+The `sleep` duration should match or exceed your longest `--timeout` value. If you run workers with `--timeout=60`, waiting 15 seconds is not enough.
+
+In Laravel 11 and 12, if you are using Horizon, `php artisan horizon:terminate` is the better alternative. Horizon manages its own worker lifecycle and provides built-in metrics on worker status. But many teams run workers directly with Supervisor, and for those setups, `queue:restart` plus proper monitoring is the path that works.
+
+The core lesson: treat `queue:restart` as a "stop" command, not a "restart" command. Everything after the stop is your responsibility to verify.
