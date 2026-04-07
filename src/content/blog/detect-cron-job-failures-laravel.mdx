@@ -1,0 +1,173 @@
+---
+title: "How to Detect Cron Job Failures in Laravel: 5 Methods Compared"
+description: "Five ways to detect cron job failures in Laravel, from log monitoring to dedicated tools. Each method's strengths, blind spots, and when to use it."
+date: 2026-04-07
+tags: ["laravel", "cron", "monitoring"]
+---
+
+Your cron jobs are either working or they're not, and the default answer from Laravel is silence either way. If you've already figured out *why* crons fail silently (we covered [the 5 common causes here](/blog/debugging-silent-laravel-cron-failures)), the next question is: how do you actually detect failures when they happen?
+
+There are five main approaches, each with different tradeoffs. Here's what each one catches and what it misses.
+
+## 1. Log file monitoring
+
+The simplest method: redirect scheduler output to a file and watch it.
+
+```bash
+* * * * * cd /var/www/html && php artisan schedule:run >> /var/log/laravel-cron.log 2>&1
+```
+
+Then you tail the log, either manually or with a log aggregation tool like Loki or Papertrail. You're looking for PHP fatals, exception traces, or non-zero exit codes.
+
+### What it catches
+
+Errors that produce output. If a task throws an uncaught exception, it shows up here. If `schedule:run` itself crashes (missing autoloader, bad PHP version), that shows up too.
+
+### What it misses
+
+Everything silent. If a task was supposed to run at 3:00 AM but the cron daemon was dead, there's no log entry to find. If a task runs successfully but produces wrong results, the log says "success." You also need something external to actually read the log and alert you, so this is really half a solution.
+
+In practice, log monitoring is a debugging aid, not a detection system.
+
+## 2. Laravel's ScheduledTaskFailed event
+
+Laravel fires a `ScheduledTaskFailed` event whenever a scheduled task exits with a non-zero code. You register a listener and do whatever you want with it: log, send Slack, page someone.
+
+```php
+// app/Providers/EventServiceProvider.php
+use Illuminate\Console\Events\ScheduledTaskFailed;
+
+protected $listen = [
+    ScheduledTaskFailed::class => [
+        \App\Listeners\NotifyFailedScheduledTask::class,
+    ],
+];
+```
+
+```php
+// app/Listeners/NotifyFailedScheduledTask.php
+namespace App\Listeners;
+
+use Illuminate\Console\Events\ScheduledTaskFailed;
+use Illuminate\Support\Facades\Log;
+
+class NotifyFailedScheduledTask
+{
+    public function handle(ScheduledTaskFailed $event): void
+    {
+        Log::error('Scheduled task failed', [
+            'command' => $event->task->command,
+            'exception' => $event->exception->getMessage(),
+        ]);
+
+        // Send to Slack, PagerDuty, etc.
+    }
+}
+```
+
+### What it catches
+
+Any task that throws an unhandled exception or returns a non-zero exit code. You get the exception object, so you can include stack traces and context in your alert.
+
+### What it misses
+
+The same blind spot as log monitoring: if the task never ran, there's no event to fire. A dead cron daemon, a misconfigured schedule expression, a deploy that wiped the crontab entry. None of these trigger `ScheduledTaskFailed` because the scheduler itself never executed.
+
+There's also `ScheduledTaskFinished` which fires on success, but you'd need to build your own tracking to notice a *missing* finish event. That's basically building a heartbeat system from scratch.
+
+## 3. Dead-man's-switch / heartbeat pings
+
+This flips the model: instead of waiting for a failure signal, you expect a success signal and alert when it's missing.
+
+Your task pings an external URL after every successful run. If the ping doesn't arrive within the expected window, you get alerted.
+
+```php
+$schedule->command('invoices:generate')
+    ->daily()
+    ->after(function () {
+        Http::get('https://monitoring.example.com/ping/abc-123');
+    });
+```
+
+Services like Healthchecks.io, Cronitor, and Better Uptime offer this. You configure the expected interval, and they handle the "did it arrive?" logic.
+
+### What it catches
+
+Missed runs. This is the big one. If the cron daemon dies, the server reboots, or the task gets removed from the schedule, the ping stops arriving and you get notified.
+
+### What it misses
+
+Failure details. You know the task didn't ping, but not why. Was it an exception? A timeout? A deploy that changed the schedule? You still need to SSH in and investigate. Heartbeat services also don't give you per-run history: exit codes, durations, output. You get "it pinged" or "it didn't."
+
+There's also a subtlety with tasks that run but fail before reaching the `after()` callback. If your command throws on line 10, the ping never fires, and the alert says "missed run" when it was actually "failed run." Not wrong, but not precise either.
+
+## 4. Health check endpoints
+
+You expose an internal route that reports whether the scheduler is healthy, then point an uptime monitor at it.
+
+```php
+// routes/web.php
+Route::get('/health/scheduler', function () {
+    $lastRun = cache('scheduler:last_run');
+
+    if (!$lastRun || $lastRun->diffInMinutes(now()) > 5) {
+        return response('Scheduler stale', 503);
+    }
+
+    return response('OK', 200);
+});
+```
+
+You update the cache value at the end of `schedule:run` or inside a frequent task:
+
+```php
+$schedule->call(fn () => cache(['scheduler:last_run' => now()], 600))
+    ->everyMinute();
+```
+
+### What it catches
+
+Whether the scheduler is running at all. Good for the "is the cron daemon alive?" question. Pairs well with existing uptime monitoring you probably already have.
+
+### What it misses
+
+Individual task status. The scheduler can be "healthy" (it runs every minute) while a specific daily task has been failing for a week. The health endpoint doesn't know about individual tasks, their schedules, or their outcomes. It's a binary alive/dead check.
+
+You could extend it to track per-task status, but at that point you're building a monitoring system inside your app.
+
+## 5. Dedicated Laravel monitoring with Crontinel
+
+The previous four methods each solve part of the problem. [Crontinel](https://crontinel.com) combines event-based failure capture with heartbeat monitoring and per-task execution history, purpose-built for Laravel.
+
+It hooks into Laravel's scheduler events (`ScheduledTaskStarting`, `ScheduledTaskFinished`, `ScheduledTaskFailed`) to record every run with exit codes, durations, and output. It also tracks expected schedules, so if a task doesn't start when it should, you get a missed-run alert.
+
+```bash
+composer require harunrrayhan/crontinel
+php artisan crontinel:install
+```
+
+Two commands, and you're collecting data on every scheduled task. No external ping URLs to configure per task, no listeners to write, no cache keys to manage.
+
+### What it catches
+
+Failed runs with full context (exit code, exception, output). Missed runs where the task never started. Duration anomalies where a task that normally takes 2 seconds suddenly takes 30. Per-task history so you can see patterns over time.
+
+For a deeper look at the alerting side, including Slack, PagerDuty, and email notification setup, see the [production cron job alerting](/use-cases/production-cron-job-alerting) page.
+
+## Which method should you use?
+
+If you're running a side project with two cron tasks, methods 1 and 2 are probably fine. Add a `ScheduledTaskFailed` listener, send it to Slack, and move on.
+
+If you're running anything in production where missed runs have consequences (billing, reports, data syncs), you need heartbeat-style detection. The question is whether you build that yourself or use something that already handles it.
+
+Here's the quick breakdown:
+
+| Method | Detects failures | Detects missed runs | Per-task history | Setup effort |
+|---|---|---|---|---|
+| Log monitoring | Yes (if you read them) | No | No | Low |
+| ScheduledTaskFailed event | Yes | No | No | Low |
+| Heartbeat pings | Indirectly | Yes | No | Medium |
+| Health endpoints | No | Partially | No | Medium |
+| Crontinel | Yes | Yes | Yes | One command |
+
+Methods 1 through 4 each cover part of the problem. Most production Laravel apps end up combining two or three of them. Crontinel handles all of it in a single package, so you don't have to stitch the pieces together yourself.
