@@ -46,6 +46,35 @@ const canonicalURL = canonical ?? new URL(Astro.url.pathname, Astro.site).toStri
     <meta name="twitter:description" content={description} />
     <meta name="twitter:image" content={new URL(ogImage, Astro.site).toString()} />
 
+    <!-- JSON-LD: Organization + WebSite -->
+    <script type="application/ld+json" set:html={JSON.stringify({
+      "@context": "https://schema.org",
+      "@graph": [
+        {
+          "@type": "Organization",
+          "@id": "https://crontinel.com/#organization",
+          "name": "Crontinel",
+          "url": "https://crontinel.com",
+          "logo": {
+            "@type": "ImageObject",
+            "url": "https://crontinel.com/favicon.svg"
+          },
+          "sameAs": [
+            "https://twitter.com/crontinel",
+            "https://github.com/HarunRRayhan"
+          ]
+        },
+        {
+          "@type": "WebSite",
+          "@id": "https://crontinel.com/#website",
+          "url": "https://crontinel.com",
+          "name": "Crontinel",
+          "description": "Laravel-native Cron & Queue monitoring",
+          "publisher": { "@id": "https://crontinel.com/#organization" }
+        }
+      ]
+    })} />
+
   </head>
   <body class="min-h-screen flex flex-col antialiased">
     <slot />

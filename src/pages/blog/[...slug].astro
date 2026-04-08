@@ -14,6 +14,24 @@ export async function getStaticPaths() {
 
 const { post } = Astro.props;
 const { Content } = await render(post);
+
+const articleSchema = {
+  "@context": "https://schema.org",
+  "@type": "Article",
+  "headline": post.data.title,
+  "description": post.data.description ?? post.data.title,
+  "datePublished": post.data.date.toISOString(),
+  "url": new URL(`/blog/${post.id}`, Astro.site).toString(),
+  "publisher": {
+    "@type": "Organization",
+    "@id": "https://crontinel.com/#organization",
+    "name": "Crontinel"
+  },
+  "author": {
+    "@type": "Organization",
+    "name": "Crontinel"
+  }
+};
 ---
 
 <Base
@@ -21,6 +39,8 @@ const { Content } = await render(post);
   description={post.data.description ?? post.data.title}
 >
   <Nav />
+
+  <script type="application/ld+json" set:html={JSON.stringify(articleSchema)} />
 
   <main class="max-w-2xl mx-auto px-4 sm:px-6 py-16">
     <a href="/blog" class="text-sm text-gray-500 hover:text-gray-300 mb-8 inline-block">← Back to blog</a>
