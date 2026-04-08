@@ -23,6 +23,10 @@ pnpm-debug.log*
 # jetbrains setting folder
 .idea/
 
+# research/queue files
+PSEO_RESEARCH.md
+gsc-queue.json
+
 # Cloudflare
 .wrangler/
 worker-configuration.d.ts
