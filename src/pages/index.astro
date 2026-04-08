@@ -425,9 +425,24 @@ import Footer from '../components/Footer.astro';
           The MIT package works standalone: Blade dashboard, CLI health check, Slack alerts, full Horizon monitoring.
           No SaaS required. Own your data.
         </p>
-        <code class="block bg-gray-950 text-green-400 text-sm rounded-lg px-4 py-3 mb-6">
-          composer require crontinel/laravel
-        </code>
+        <div class="relative mb-6">
+          <code id="install-cmd" class="block bg-gray-950 text-green-400 text-sm rounded-lg px-4 py-3 pr-12">
+            composer require crontinel/laravel
+          </code>
+          <button
+            id="copy-install-btn"
+            aria-label="Copy install command"
+            class="absolute top-2 right-2 p-1.5 rounded text-gray-500 hover:text-gray-300 hover:bg-gray-800 transition-colors"
+          >
+            <svg id="copy-icon" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+              <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+            </svg>
+            <svg id="check-icon" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" class="hidden text-green-400">
+              <polyline points="20 6 9 17 4 12"></polyline>
+            </svg>
+          </button>
+        </div>
         <a
           href="https://github.com/crontinel/crontinel"
           target="_blank"
@@ -472,4 +487,20 @@ import Footer from '../components/Footer.astro';
 
   btnM.addEventListener('click', setM);
   btnY.addEventListener('click', setY);
+
+  const copyBtn = document.getElementById('copy-install-btn');
+  const copyIcon = document.getElementById('copy-icon');
+  const checkIcon = document.getElementById('check-icon');
+  const installCmd = document.getElementById('install-cmd');
+
+  copyBtn?.addEventListener('click', async () => {
+    const text = installCmd?.textContent?.trim() ?? '';
+    await navigator.clipboard.writeText(text);
+    copyIcon?.classList.add('hidden');
+    checkIcon?.classList.remove('hidden');
+    setTimeout(() => {
+      copyIcon?.classList.remove('hidden');
+      checkIcon?.classList.add('hidden');
+    }, 1500);
+  });
 </script>
