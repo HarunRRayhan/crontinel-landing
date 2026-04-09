@@ -4,7 +4,7 @@ description: "Cronitor tells you a job ran. It can't tell you your Horizon super
 date: 2026-04-05
 ---
 
-Most Laravel developers set up a cron monitor by pinging a URL every time a job runs. Cronitor, Better Stack heartbeats, or Forge Heartbeats — they all work the same way. The job fires, it hits a URL, the monitor marks it green.
+Most Laravel developers set up a cron monitor by pinging a URL every time a job runs. Cronitor, Better Stack heartbeats, or Forge Heartbeats – they all work the same way. The job fires, it hits a URL, the monitor marks it green.
 
 The problem: that's not how Horizon failures actually happen.
 
@@ -14,7 +14,7 @@ When your Horizon setup breaks in production, it usually looks like one of these
 
 **1. A supervisor process dies, but Horizon "stays running"**
 
-Horizon is a supervisor of supervisors. If you have two supervisor groups — say, one for default queue and one for emails — and one of them crashes, Horizon's status still shows "running" because the other supervisor is alive. Your email queue is now dead. Generic monitors have no way to know this.
+Horizon is a supervisor of supervisors. If you have two supervisor groups – say, one for default queue and one for emails – and one of them crashes, Horizon's status still shows "running" because the other supervisor is alive. Your email queue is now dead. Generic monitors have no way to know this.
 
 **2. Horizon gets paused accidentally**
 
@@ -22,23 +22,23 @@ Horizon is a supervisor of supervisors. If you have two supervisor groups — sa
 
 **3. The failed job rate spikes gradually**
 
-Jobs fail. That's normal. But when the failure rate climbs from 0.2/min to 8/min over two hours, you want to know before it becomes 40/min and your users start screaming. Generic monitors can't see job failure rates — they only know if a URL was pinged.
+Jobs fail. That's normal. But when the failure rate climbs from 0.2/min to 8/min over two hours, you want to know before it becomes 40/min and your users start screaming. Generic monitors can't see job failure rates – they only know if a URL was pinged.
 
 ## What actually needs to be monitored
 
 For a Laravel app with Horizon, you need to watch:
 
-- **Per-supervisor status** — not just "is Horizon running"
-- **Failed jobs per minute** — with a configurable threshold
-- **Queue depths per queue** — not just "is the queue being worked"
-- **Oldest job age** — a queue with 1 job aged 8 hours is worse than one with 500 fresh jobs
-- **Paused state** — explicitly tracked, not inferred
+- **Per-supervisor status** – not just "is Horizon running"
+- **Failed jobs per minute** – with a configurable threshold
+- **Queue depths per queue** – not just "is the queue being worked"
+- **Oldest job age** – a queue with 1 job aged 8 hours is worse than one with 500 fresh jobs
+- **Paused state** – explicitly tracked, not inferred
 
 None of these are available to an HTTP ping monitor. They require reading Horizon's internal Redis keys.
 
 ## How Crontinel approaches this
 
-Crontinel's Laravel package reads Horizon's Redis keys directly — the same data that the Horizon dashboard shows you, but piped into configurable alerts. It also hooks into Laravel's `ScheduledTaskFinished` and `ScheduledTaskFailed` events to track every cron run with its exit code and duration.
+Crontinel's Laravel package reads Horizon's Redis keys directly – the same data that the Horizon dashboard shows you, but piped into configurable alerts. It also hooks into Laravel's `ScheduledTaskFinished` and `ScheduledTaskFailed` events to track every cron run with its exit code and duration.
 
 The result: you get alerted when a supervisor goes down, not after a customer notices their invoice wasn't sent.
 

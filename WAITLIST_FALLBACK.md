@@ -77,8 +77,11 @@ These are ways to capture real interest while Resend is not wired up. Ranked by 
 
 ### Unavailable state (env vars missing, 503 returned)
 
-- **Message** (amber/yellow): `Signup is temporarily unavailable. Join via our waitlist form instead.`
-  - "waitlist form" is a link to the Tally.so (or Google Form) URL.
+- **Current live fallback** (amber/yellow): `Waitlist is temporarily unavailable. Follow us on X @crontinel for launch updates.`
+  - `@crontinel` links to `https://x.com/crontinel`
+  - This is the current no-extra-account fallback already wired into the landing page.
+- **Preferred richer fallback**: `Signup is temporarily unavailable. Join via our waitlist form instead.`
+  - "waitlist form" can point to a Tally.so or Google Form URL once one exists.
 - **Alternative if using mailto**: `Signup is temporarily unavailable. Email hello@crontinel.com to join the waitlist.`
 - Button re-enables so the user can retry later.
 
@@ -160,9 +163,15 @@ Even without automated capture, you can measure interest:
 
 ## TODAY: One Concrete Action (< 30 minutes)
 
-**Stop the silent fake-succeed. Set up Tally.so as the fallback.**
+**Current status: the silent fake-success issue is already fixed.**
 
-Here is the exact plan:
+What is live now:
+- `functions/api/subscribe.ts` returns `503` with `error: 'unavailable'` when Resend env vars are missing
+- `src/pages/index.astro` detects that state and shows an honest fallback message pointing users to `https://x.com/crontinel`
+
+### Best next upgrade
+
+If you want real lead capture before Resend is wired, the clean next step is still to add a Tally.so fallback.
 
 ### Minutes 0-5: Create a Tally.so form
 
@@ -170,51 +179,24 @@ Here is the exact plan:
 2. Create a form with one field: "Email" (type: email, required)
 3. Set the form title to "Crontinel Waitlist"
 4. Set the thank-you message to: "You're on the list. We'll reach out when Crontinel launches."
-5. Publish the form and copy the URL (e.g., `https://tally.so/r/xxxxxx`)
+5. Publish the form and copy the URL (e.g. `https://tally.so/r/xxxxxx`)
 
-### Minutes 5-15: Fix the API to stop lying
+### Minutes 5-15: Replace the X fallback with a real capture link
 
-Update `functions/api/subscribe.ts` line 24-28:
-
-```ts
-if (!env.RESEND_API_KEY || !env.RESEND_AUDIENCE_ID) {
-  console.error('Resend env vars not configured.');
-  return Response.json(
-    { ok: false, unavailable: true, error: 'Signup is temporarily unavailable.' },
-    { status: 503, headers: corsHeaders }
-  );
-}
-```
-
-### Minutes 15-25: Update the client-side script to handle unavailable state
-
-In `src/pages/index.astro`, update the submit handler to detect `unavailable`:
+In `src/pages/index.astro`, keep the same unavailable-state branch but swap the message to:
 
 ```ts
-const data = await res.json();
-
-if (res.ok && data.ok) {
-  msg.textContent = "You're on the list! We'll email you when Crontinel launches.";
-  msg.className = 'mt-3 text-sm text-green-400';
-  form.reset();
-} else if (data.unavailable) {
-  msg.innerHTML = 'Signup is temporarily unavailable. <a href="https://tally.so/r/XXXXX" target="_blank" class="underline text-yellow-400">Join via our waitlist form</a> instead.';
-  msg.className = 'mt-3 text-sm text-yellow-400';
-  btn.disabled = false;
-  btn.textContent = 'Get early access';
-} else {
-  msg.textContent = data.error ?? 'Something went wrong. Please try again.';
-  msg.className = 'mt-3 text-sm text-red-400';
-  btn.disabled = false;
-  btn.textContent = 'Get early access';
-}
+msg.innerHTML = 'Signup is temporarily unavailable. <a href="https://tally.so/r/XXXXX" target="_blank" rel="noopener" class="underline">Join via our waitlist form</a> instead.';
+msg.className = 'mt-3 text-sm text-yellow-400';
+btn.disabled = false;
+btn.textContent = 'Get early access';
 ```
 
-### Minutes 25-30: Deploy and verify
+### Minutes 15-25: Deploy and verify
 
-1. Commit the changes
+1. Commit the change
 2. Push to trigger CF Pages deployment
 3. Test: submit an email on crontinel.com, confirm you see the yellow fallback message with Tally link
 4. Click the Tally link, submit an email there, confirm it appears in Tally dashboard
 
-Once Resend keys are configured later, the 503 path stops firing and the form works natively. The Tally link becomes dead code that only activates again if keys are ever removed. Zero maintenance.
+Once Resend keys are configured later, the 503 path stops firing and the form works natively. The Tally link becomes dormant fallback code that only activates again if keys are ever removed.

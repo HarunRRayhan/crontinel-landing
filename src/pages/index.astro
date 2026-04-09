@@ -5,8 +5,8 @@ import Footer from '../components/Footer.astro';
 ---
 
 <Base
-  title="Crontinel — Laravel Cron & Background Job Monitoring"
-  description="Know when your Laravel background jobs stop working — before your customers do. Deep queue and cron monitoring, not just HTTP pings."
+  title="Crontinel | Laravel Cron & Background Job Monitoring"
+  description="Know when your Laravel background jobs stop working, before your customers do. Deep queue and cron monitoring, not just HTTP pings."
 >
   <Nav />
 
@@ -205,7 +205,7 @@ import Footer from '../components/Footer.astro';
                 <tr class="bg-yellow-950/20">
                   <td class="py-1.5 text-gray-300">cleanup-old-logs</td>
                   <td class="text-right text-gray-400">23h ago</td>
-                  <td class="text-right text-gray-400">—</td>
+                  <td class="text-right text-gray-400">–</td>
                   <td class="text-right text-yellow-400">⚠ late</td>
                 </tr>
               </tbody>
@@ -222,7 +222,7 @@ import Footer from '../components/Footer.astro';
           Your uptime monitor says green. Your queue has been dead for hours.
         </h2>
         <p class="text-gray-400 text-center max-w-xl mx-auto mb-12">
-          Ping-based monitors confirm a job started. Not that it worked — or that workers are still processing.
+          Ping-based monitors confirm a job started. Not that it worked, or that workers are still processing.
         </p>
 
         <div class="grid sm:grid-cols-3 gap-6">
@@ -266,7 +266,7 @@ import Footer from '../components/Footer.astro';
         {[
           {
             title: 'Deep queue internals',
-            desc: 'Goes beyond pings. Reads worker state directly — which supervisor is down, failed job rate, whether your queue manager is paused.',
+            desc: 'Goes beyond pings. Reads worker state directly: which supervisor is down, failed job rate, whether your queue manager is paused.',
             badge: 'Unique',
           },
           {

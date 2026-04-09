@@ -43,7 +43,7 @@ You want to see the symlink path, not a release-specific path:
 # Correct
 * * * * * cd /var/www/html/current && php artisan schedule:run >> /var/log/laravel-schedule.log 2>&1
 
-# Wrong — breaks on next deploy
+# Wrong – breaks on next deploy
 * * * * * cd /var/www/html/releases/42 && php artisan schedule:run >> /var/log/laravel-schedule.log 2>&1
 ```
 
