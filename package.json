@@ -2,7 +2,7 @@
   "name": "crontinel-landing",
   "type": "module",
   "version": "0.0.1",
-"scripts": {
+  "scripts": {
     "dev": "astro dev",
     "build": "astro build",
     "preview": "astro preview",
@@ -21,6 +21,6 @@
   },
   "devDependencies": {
     "@anthropic-ai/sdk": "^0.82.0",
-    "wrangler": "^4.61.1"
+    "wrangler": "^3.90.0"
   }
 }
