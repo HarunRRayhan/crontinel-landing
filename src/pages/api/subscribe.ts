@@ -1,6 +1,7 @@
 import type { APIRoute } from 'astro';
+import { env } from 'cloudflare:workers';
 
-export const POST: APIRoute = async ({ request, locals }) => {
+export const POST: APIRoute = async ({ request }) => {
   try {
     const body = await request.json();
     const email = body?.email;
@@ -20,22 +21,14 @@ export const POST: APIRoute = async ({ request, locals }) => {
       });
     }
 
-    // Cloudflare Workers SSR: secrets injected via locals.cfContext.env
-    const cfEnv = (locals as any)?.cfContext?.env;
-
-    const resendApiKey = cfEnv?.RESEND_API_KEY
-      ?? import.meta.env.RESEND_API_KEY
-      ?? process.env.RESEND_API_KEY;
-
-    const resendAudienceId = cfEnv?.RESEND_AUDIENCE_ID
-      ?? import.meta.env.RESEND_AUDIENCE_ID
-      ?? process.env.RESEND_AUDIENCE_ID;
+    const resendApiKey = env.RESEND_API_KEY;
+    const resendAudienceId = env.RESEND_AUDIENCE_ID;
 
     if (!resendApiKey || !resendAudienceId) {
       console.error('Missing env vars:', {
-        cfEnvRESEND: cfEnv ? Object.keys(cfEnv).filter(k => k.includes('RESEND')) : 'none',
         hasApiKey: !!resendApiKey,
         hasAudienceId: !!resendAudienceId,
+        envKeys: Object.keys(env).filter(k => k.includes('RESEND')),
       });
       return new Response(JSON.stringify({ ok: false, error: 'Server misconfigured' }), {
         status: 500,
