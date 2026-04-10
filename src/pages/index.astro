@@ -5,8 +5,8 @@ import Footer from '../components/Footer.astro';
 ---
 
 <Base
-  title="Crontinel | Background Job and Cron Monitoring"
-  description="Know when your background jobs stop working, before your customers do. Deep queue and cron monitoring that generic uptime tools miss."
+  title="Crontinel | Cloud Cron Monitoring for Everyone"
+  description="Know when your cron jobs stop working, before your customers do. Cloud cron monitoring that generic uptime tools miss."
 >
   <Nav />
 
@@ -22,12 +22,12 @@ import Footer from '../components/Footer.astro';
       </div>
 
       <h1 class="text-4xl sm:text-5xl lg:text-6xl font-bold text-white leading-tight tracking-tight mb-6">
-        Your background jobs have been<br class="hidden sm:block" />
+        Your cron jobs have been<br class="hidden sm:block" />
         <span class="text-red-400">silently broken for 3 days.</span>
       </h1>
 
       <p class="text-lg sm:text-xl text-gray-400 max-w-2xl mx-auto mb-10">
-        Queue depth. Worker state. Silent cron failures.<br class="hidden sm:block" />
+        Cron health. Schedule failures. Silent downtime.<br class="hidden sm:block" />
         The things your uptime monitor can't see.
       </p>
 
@@ -61,19 +61,15 @@ import Footer from '../components/Footer.astro';
           rel="noopener"
           class="text-sm text-gray-500 hover:text-gray-300 transition-colors"
         >
-          Self-host for free →
+          Open source →
         </a>
         <span class="text-gray-700">·</span>
-        <span class="relative inline-flex items-center gap-1">
-          <code id="hero-install-cmd" class="text-gray-500 bg-gray-900 px-2 py-0.5 rounded text-xs">composer require crontinel/laravel</code>
-          <button
-            id="hero-copy-btn"
-            aria-label="Copy install command"
-            onclick="(function(){var t=document.getElementById('hero-install-cmd').textContent.trim();navigator.clipboard.writeText(t);var b=document.getElementById('hero-copy-btn');b.textContent='✓';setTimeout(function(){b.textContent='⧉';},1500);})()"
-            class="text-gray-600 hover:text-gray-300 text-xs transition-colors px-1"
-            title="Copy to clipboard"
-          >⧉</button>
-        </span>
+        <a
+          href="/docs/introduction"
+          class="text-sm text-gray-500 hover:text-gray-300 transition-colors"
+        >
+          Docs →
+        </a>
       </div>
 
       <script>
@@ -316,15 +312,15 @@ import Footer from '../components/Footer.astro';
     <!-- Integrations -->
     <section class="max-w-5xl mx-auto px-4 sm:px-6 pb-16 text-center">
       <h2 class="text-xl font-semibold text-white mb-2">Native Laravel integration. REST API for everything else.</h2>
-      <p class="text-gray-500 text-sm mb-8">Native integrations ship deep telemetry. Any stack can use the REST API for basic heartbeat monitoring.</p>
+      <p class="text-gray-500 text-sm mb-8">Deep native integrations. REST API for any other stack.</p>
       <div class="flex flex-wrap justify-center gap-3">
         {[
-          { name: 'Laravel + Horizon', status: 'native', color: 'text-green-400 border-green-500/30 bg-green-500/5' },
-          { name: 'Sidekiq', status: 'soon', color: 'text-gray-500 border-gray-700 bg-gray-900' },
-          { name: 'Celery', status: 'soon', color: 'text-gray-500 border-gray-700 bg-gray-900' },
-          { name: 'BullMQ', status: 'soon', color: 'text-gray-500 border-gray-700 bg-gray-900' },
-          { name: 'Resque', status: 'soon', color: 'text-gray-500 border-gray-700 bg-gray-900' },
-          { name: 'Any (REST API)', status: 'now', color: 'text-gray-400 border-gray-600 bg-gray-900' },
+          { name: 'Cron monitoring', status: 'native', color: 'text-green-400 border-green-500/30 bg-green-500/5' },
+          { name: 'REST API', status: 'native', color: 'text-green-400 border-green-500/30 bg-green-500/5' },
+          { name: 'MCP server', status: 'native', color: 'text-green-400 border-green-500/30 bg-green-500/5' },
+          { name: 'Webhook alerts', status: 'native', color: 'text-green-400 border-green-500/30 bg-green-500/5' },
+          { name: 'Status page', status: 'native', color: 'text-green-400 border-green-500/30 bg-green-500/5' },
+          { name: 'HTTP endpoints', status: 'soon', color: 'text-gray-500 border-gray-700 bg-gray-900' },
         ].map((i) => (
           <div class={`flex items-center gap-2 border rounded-full px-4 py-1.5 text-sm font-medium ${i.color}`}>
             {i.name}
