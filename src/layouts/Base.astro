@@ -45,7 +45,6 @@ const canonicalURL = canonical ?? new URL(Astro.url.pathname, Astro.site).toStri
 
     <!-- Twitter -->
     <meta name="twitter:card" content="summary_large_image" />
-    <meta name="twitter:site" content="@CrontinelHQ" />
     <meta name="twitter:title" content={title} />
     <meta name="twitter:description" content={description} />
     <meta name="twitter:image" content={new URL(ogImage, Astro.site).toString()} />
@@ -64,8 +63,7 @@ const canonicalURL = canonical ?? new URL(Astro.url.pathname, Astro.site).toStri
             "url": "https://crontinel.com/favicon.svg"
           },
           "sameAs": [
-            "https://twitter.com/crontinel",
-            "https://github.com/HarunRRayhan"
+            "https://github.com/crontinel"
           ]
         },
         {
@@ -73,7 +71,7 @@ const canonicalURL = canonical ?? new URL(Astro.url.pathname, Astro.site).toStri
           "@id": "https://crontinel.com/#website",
           "url": "https://crontinel.com",
           "name": "Crontinel",
-          "description": "Laravel-native Cron & Queue monitoring",
+          "description": "Cron, Scheduler & Background Job Monitoring",
           "publisher": { "@id": "https://crontinel.com/#organization" }
         }
       ]
