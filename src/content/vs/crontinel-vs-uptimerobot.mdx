@@ -1,0 +1,94 @@
+---
+title: "Crontinel vs UptimeRobot: HTTP Monitoring vs Laravel-Native Queue and Cron Monitoring"
+description: "UptimeRobot checks if your site responds. Crontinel checks if your background jobs are running. They solve different problems, and here's when you need both."
+competitor: "UptimeRobot"
+date: 2026-04-10
+---
+
+UptimeRobot and Crontinel solve different problems. UptimeRobot tells you whether your site is reachable from the outside. Crontinel tells you whether your Laravel background jobs, queues, and scheduled tasks are actually running. Most Laravel applications need both.
+
+## What UptimeRobot Does Well
+
+UptimeRobot is one of the most popular uptime monitoring services for good reason. It checks your URLs from external servers around the world and alerts you when something goes down. The core feature set is solid:
+
+- HTTP/HTTPS monitoring with response time tracking
+- Ping, port, and keyword checks
+- A generous free tier with 50 monitors at 5-minute intervals
+- Status pages you can share with your team or customers
+- Integrations with Slack, email, webhooks, PagerDuty, and more
+
+For pure HTTP uptime monitoring, UptimeRobot is hard to beat. If your site returns a 200, you know the web layer is healthy.
+
+## What UptimeRobot Cannot See
+
+The problem is that a 200 response tells you nothing about what happens behind that HTTP layer. Your site can return a perfect 200 while:
+
+- Your email queue has 14,000 stuck jobs
+- A Horizon supervisor crashed two hours ago
+- The nightly report scheduler silently stopped running
+- A critical cron job is failing with exit code 1 every time
+
+UptimeRobot monitors the front door. It has no visibility into the work happening in the background. For a Laravel app that depends on queues and scheduled tasks, that gap can be costly.
+
+## The Fundamental Difference
+
+UptimeRobot uses **external HTTP probing**. It hits your endpoint from outside and checks the response. This is the right approach for uptime monitoring, and UptimeRobot executes it well.
+
+Crontinel uses **internal Laravel monitoring**. It runs inside your application, watches the scheduler event loop, reads queue depths from Redis or your database, and tracks Horizon supervisor state directly. It knows whether `app:send-invoices` ran at 3:00 AM and whether it succeeded or failed.
+
+These are complementary approaches, not competing ones.
+
+## Feature Comparison
+
+| Feature | UptimeRobot | Crontinel |
+|---|---|---|
+| HTTP/HTTPS uptime monitoring | Yes (strong) | No |
+| Ping and port checks | Yes | No |
+| Cron/scheduled task monitoring | No | Yes |
+| Queue depth tracking | No | Yes (Redis, database) |
+| Horizon supervisor health | No | Yes |
+| Cron exit code tracking | No | Yes |
+| Self-hosted option | No (proprietary) | Yes (MIT licensed) |
+| Free tier | 50 monitors, 5-min intervals | Full OSS package, free forever |
+| Paid plan | From $7/mo | $19/mo SaaS (optional) |
+| Alert channels | Slack, email, webhook, SMS | Slack, email, webhook |
+| Status pages | Yes | No |
+| MCP server for AI assistants | No | Yes |
+| Keyword checks | Yes | No |
+
+## When to Use UptimeRobot
+
+Use UptimeRobot when you need to know whether your site is reachable from the internet. It handles HTTP monitoring, SSL certificate expiry alerts, and response time tracking. If your primary concern is "can users load the page," UptimeRobot covers that.
+
+## When to Use Crontinel
+
+Use Crontinel when you need to know whether your Laravel background work is healthy. If your app processes jobs through queues, runs scheduled tasks via the scheduler, or uses Horizon, Crontinel watches all of that. The open-source package gives you a local dashboard and CLI checks at no cost. The SaaS layer adds hosted alerting and history if you want it.
+
+## When to Use Both
+
+Most production Laravel applications should run both. UptimeRobot covers the external layer. Crontinel covers the internal layer. Together, they give you full visibility: you know the site is up and you know the background work is running.
+
+A common setup looks like this: UptimeRobot pings your health endpoint every 5 minutes, while Crontinel monitors your scheduler and queues from inside the app every minute.
+
+## Installation Comparison
+
+**UptimeRobot** requires no code changes. You add a URL in their dashboard and monitoring starts immediately.
+
+**Crontinel** installs as a Laravel package:
+
+```bash
+composer require crontinel/laravel
+php artisan crontinel:install
+```
+
+After installing, you get the local dashboard at `/crontinel` and can run health checks via:
+
+```bash
+php artisan crontinel:check
+```
+
+Connecting to the SaaS for hosted alerting takes one additional env variable: your API key from app.crontinel.com.
+
+## Two Tools, One Stack
+
+UptimeRobot is excellent at what it does. Crontinel handles what UptimeRobot cannot see. Running both means your HTTP layer and your background job layer are monitored independently, so nothing fails silently. For any Laravel app that relies on queues or scheduled tasks, that combination is the baseline for production readiness.

@@ -34,12 +34,24 @@ const comparisons = [
     tagline: 'Full observability platform. Requires DIY setup for queues.',
     verdict: 'Queue monitoring needs custom metrics and days of config.',
   },
+  {
+    name: 'UptimeRobot',
+    slug: 'crontinel-vs-uptimerobot',
+    tagline: 'HTTP uptime monitoring. No background job visibility.',
+    verdict: 'Your site returns 200 while 14k jobs are stuck.',
+  },
+  {
+    name: 'Forge Heartbeats',
+    slug: 'crontinel-vs-forge-heartbeats',
+    tagline: 'Ping-based cron check. No queue or Horizon monitoring.',
+    verdict: 'Knows the job ran. Not whether it succeeded.',
+  },
 ];
 ---
 
 <Base
   title="Crontinel vs Alternatives  |  Laravel Monitoring Comparison"
-  description="How Crontinel compares to Cronitor, Healthchecks.io, Better Stack, Telescope, and Datadog for Laravel queue and cron monitoring."
+  description="How Crontinel compares to Cronitor, Healthchecks.io, Better Stack, Telescope, Datadog, UptimeRobot, and Forge Heartbeats for Laravel queue and cron monitoring."
 >
   <Nav />
 
