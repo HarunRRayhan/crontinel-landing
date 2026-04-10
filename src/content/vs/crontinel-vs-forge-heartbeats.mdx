@@ -1,0 +1,80 @@
+---
+title: "Crontinel vs Laravel Forge Heartbeats: When Ping-Based Monitoring Isn't Enough"
+description: "Forge Heartbeats tells you a job ran. Crontinel tells you what happened after it ran, whether your queues are healthy, and if Horizon is actually working."
+competitor: "Laravel Forge Heartbeats"
+date: 2026-04-10
+---
+
+Laravel Forge includes a built-in feature called Heartbeats. It works by appending an HTTP ping to the end of your scheduled tasks. If the ping does not arrive within the expected window, Forge sends you a notification. Simple, effective, and already included with your Forge subscription.
+
+But ping-based monitoring has a fundamental blind spot: it only tells you that a task ran. It cannot tell you whether the task *succeeded*.
+
+## How Forge Heartbeats Works
+
+Forge generates a unique URL for each scheduled task. You append a curl call to the end of your cron entry:
+
+```bash
+* * * * * cd /home/forge/app && php artisan schedule:run && curl -s https://forge.laravel.com/heartbeat/xxxx
+```
+
+If Forge does not receive the ping within the configured threshold, it alerts you via email or Slack. That is the entire feature. It answers one question: "Did this task finish executing?"
+
+## What Forge Heartbeats Does Not Cover
+
+Forge Heartbeats was designed for simplicity, not depth. It does not track:
+
+- **Exit codes**: A task can fail with a non-zero exit code, and the ping still fires if you chain commands with `;` instead of `&&`
+- **Execution duration**: No way to know if your nightly report took 2 seconds or 20 minutes
+- **Late detection**: No awareness of whether a task started on time versus running behind schedule
+- **Queue depth**: No visibility into how many jobs are waiting across your queues
+- **Horizon supervisor health**: No monitoring of whether Horizon processes are running or paused
+- **Failed job alerts**: No connection to Laravel's `failed_jobs` table
+
+These gaps matter most in queue-heavy applications where the scheduler is only one piece of the puzzle.
+
+## Feature Comparison
+
+| Feature | Forge Heartbeats | Crontinel |
+|---|---|---|
+| Scheduler ping monitoring | Yes (heartbeat URL) | Yes (event listener) |
+| Exit code tracking | No | Yes |
+| Duration tracking | No | Yes |
+| Late detection | No | Yes |
+| Queue depth monitoring | No | Yes |
+| Horizon supervisor health | No | Yes |
+| Failed job alerts | No | Yes |
+| Local dashboard | No (Forge dashboard is server management) | Yes |
+| MCP server | No | Yes |
+| Requires Forge | Yes | No |
+| Pricing | Included with Forge ($12/mo per server) | Free OSS + $19/mo SaaS |
+
+## When Forge Heartbeats Is Enough
+
+Forge Heartbeats works well for straightforward setups. If your application has a handful of scheduled tasks, you are already paying for Forge, and you mostly need to know "did the cron fire today," Heartbeats covers that with zero additional configuration. Credit where it is due: the simplicity is a feature, not a limitation, for many teams.
+
+You probably do not need more than Heartbeats if:
+
+- Your app runs fewer than five scheduled tasks
+- You do not use queues heavily or do not run Horizon
+- Knowing a task executed is sufficient (you check results manually)
+
+## When You Need Crontinel
+
+The calculus changes when your infrastructure depends on queues. If you run Horizon, you need to know whether supervisors are healthy, whether queue depth is growing faster than workers can process, and whether failed jobs are piling up. Forge Heartbeats has no visibility into any of this.
+
+Crontinel becomes the better choice when:
+
+- You run Horizon and need supervisor health monitoring
+- Your queues process thousands of jobs daily and you need depth alerts
+- You care about exit codes and execution duration, not just "did it run"
+- You want a local dashboard purpose-built for Laravel monitoring
+- You deploy outside Forge (Ploi, custom servers, Docker, Laravel Cloud)
+- You want MCP server integration for AI-assisted debugging
+
+## They Can Coexist
+
+You do not have to choose one or the other. If you are on Forge, Heartbeats will keep working alongside Crontinel. Heartbeats provides a lightweight confirmation that cron is firing, while Crontinel handles the deeper observability layer: exit codes, durations, queue health, and Horizon status.
+
+Many teams start with Heartbeats and add Crontinel once their queue infrastructure grows past what ping-based monitoring can cover. The two tools monitor different things at different depths, and running both gives you the broadest safety net with minimal overhead.
+
+Forge Heartbeats answers "did it run?" Crontinel answers "did it work, how long did it take, and is everything else healthy too?"
