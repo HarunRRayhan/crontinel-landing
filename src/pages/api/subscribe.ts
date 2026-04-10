@@ -23,12 +23,12 @@ export const POST: APIRoute = async ({ request }) => {
     const resendRes = await fetch('https://api.resend.com/contacts', {
       method: 'POST',
       headers: {
-        'Authorization': `Bearer ${import.meta.env.RESEND_API_KEY}`,
+        'Authorization': `Bearer ${process.env.RESEND_API_KEY}`,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
         email,
-        audience_id: import.meta.env.RESEND_AUDIENCE_ID,
+        audience_id: process.env.RESEND_AUDIENCE_ID,
       }),
     });
 

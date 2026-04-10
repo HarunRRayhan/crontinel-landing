@@ -4,6 +4,11 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      cloudflareApiToken:
+        description: 'Cloudflare API Token (cfut_)'
+        required: true
+        default: ${{ secrets.CLOUDFLARE_API_TOKEN }}
 
 jobs:
   deploy:
@@ -35,7 +40,7 @@ jobs:
       - name: Deploy to Cloudflare Workers
         uses: cloudflare/wrangler-action@v3
         with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          apiToken: ${{ inputs.cloudflareApiToken || secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           wranglerVersion: '3'
-          legacyEnv: true
+          legacyEnv: false
