@@ -1,8 +1,8 @@
 {
 	"compatibility_date": "2026-04-05",
 	"name": "crontinel-landing",
-	"pages_project": "crontinel-landing",
 	"compatibility_flags": ["global_fetch_strictly_public"],
+	"main": "dist/_worker.js",
 	"assets": {
 		"directory": "./dist"
 	}
