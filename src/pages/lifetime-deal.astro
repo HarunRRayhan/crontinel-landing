@@ -1,0 +1,336 @@
+---
+import Base from '../layouts/Base.astro';
+import Nav from '../components/Nav.astro';
+import Footer from '../components/Footer.astro';
+
+const faqs = [
+  {
+    q: 'What does "lifetime" mean exactly?',
+    a: 'It means you pay once and keep access to your tier for as long as Crontinel exists as a product. No recurring charges, no renewals. Your plan stays active indefinitely.',
+  },
+  {
+    q: 'Will I get future features?',
+    a: 'Yes. You get every feature released for your tier. If we add new alert channels, dashboard improvements, or integrations to the Pro plan, Pro LTD holders get them automatically. The same applies to Team-tier features for Agency LTD holders.',
+  },
+  {
+    q: 'Can I upgrade my tier later?',
+    a: 'Yes. You can upgrade from Solo to Pro or from Pro to Agency by paying the difference. Contact support after purchase and we will generate an upgrade link.',
+  },
+  {
+    q: 'Is there a refund policy?',
+    a: 'We offer a 30-day money-back guarantee, no questions asked. If Crontinel is not the right fit, email support and you will get a full refund.',
+  },
+  {
+    q: 'What if the product shuts down?',
+    a: 'If we ever discontinue the SaaS, all LTD holders will receive at least 12 months advance notice. The open-source Laravel package will remain available on GitHub under the MIT license regardless.',
+  },
+  {
+    q: 'Can I use the LTD for client projects?',
+    a: 'Absolutely. Each "app" slot is one Laravel application, and it does not matter who owns it. Freelancers and agencies use the Agency tier to monitor client apps from a single dashboard.',
+  },
+];
+---
+
+<Base
+  title="Lifetime Deal | Crontinel"
+  description="Get Crontinel Pro or Team forever with a single payment. Limited to 250 codes. Laravel-native cron and queue monitoring, one price, no subscriptions."
+>
+  <Nav />
+
+  <main class="max-w-5xl mx-auto px-4 sm:px-6 py-16">
+
+    <!-- Hero -->
+    <section class="text-center mb-20">
+      <div class="inline-block bg-green-500/10 border border-green-500/20 text-green-400 text-sm font-medium px-4 py-1.5 rounded-full mb-6">
+        Limited to 250 codes
+      </div>
+      <h1 class="text-4xl sm:text-5xl font-bold text-white mb-4 leading-tight">
+        Get Crontinel Pro. Forever.
+      </h1>
+      <p class="text-lg text-gray-400 max-w-2xl mx-auto mb-6">
+        One payment. Lifetime access. All future updates for your tier included.
+        No subscriptions, no renewals, no surprises.
+      </p>
+      <p class="text-sm text-gray-500">
+        Available for 3 weeks only. Once the codes are gone, they are gone.
+      </p>
+    </section>
+
+    <!-- Savings Comparison -->
+    <section class="mb-20">
+      <h2 class="text-2xl font-bold text-white text-center mb-8">How much you save</h2>
+      <p class="text-gray-400 text-center mb-8 max-w-xl mx-auto text-sm">
+        Compare the Pro LTD ($149) against the regular Pro subscription ($19/mo).
+        The math speaks for itself.
+      </p>
+      <div class="grid sm:grid-cols-3 gap-6 max-w-3xl mx-auto">
+        <div class="bg-gray-900 border border-gray-800 rounded-xl p-6 text-center">
+          <div class="text-sm text-gray-500 uppercase tracking-wide mb-2">After 1 year</div>
+          <div class="text-gray-400 text-sm mb-1">Monthly cost: <span class="text-white font-medium">$228</span></div>
+          <div class="text-green-400 text-2xl font-bold">You save $79</div>
+          <div class="text-xs text-gray-500 mt-1">35% savings</div>
+        </div>
+        <div class="bg-gray-900 border border-green-500/40 rounded-xl p-6 text-center relative">
+          <div class="absolute -top-3 left-1/2 -translate-x-1/2 bg-green-500 text-black text-xs font-semibold px-3 py-0.5 rounded-full whitespace-nowrap">
+            Best value
+          </div>
+          <div class="text-sm text-gray-500 uppercase tracking-wide mb-2">After 2 years</div>
+          <div class="text-gray-400 text-sm mb-1">Monthly cost: <span class="text-white font-medium">$456</span></div>
+          <div class="text-green-400 text-2xl font-bold">You save $307</div>
+          <div class="text-xs text-gray-500 mt-1">67% savings</div>
+        </div>
+        <div class="bg-gray-900 border border-gray-800 rounded-xl p-6 text-center">
+          <div class="text-sm text-gray-500 uppercase tracking-wide mb-2">After 3 years</div>
+          <div class="text-gray-400 text-sm mb-1">Monthly cost: <span class="text-white font-medium">$684</span></div>
+          <div class="text-green-400 text-2xl font-bold">You save $535</div>
+          <div class="text-xs text-gray-500 mt-1">78% savings</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Codes Remaining -->
+    <section class="mb-20">
+      <div class="bg-gray-900 border border-gray-800 rounded-xl p-6 max-w-xl mx-auto text-center">
+        <div class="text-sm text-gray-500 uppercase tracking-wide mb-2">Codes remaining</div>
+        <div class="text-4xl font-bold text-white mb-3">
+          <span id="codes-remaining">250</span> <span class="text-lg text-gray-500 font-normal">of 250</span>
+        </div>
+        <div class="w-full bg-gray-800 rounded-full h-3 overflow-hidden">
+          <div id="codes-bar" class="bg-green-500 h-3 rounded-full transition-all duration-500" style="width: 100%"></div>
+        </div>
+        <p class="text-xs text-gray-500 mt-3">150 Solo + 75 Pro + 25 Agency</p>
+      </div>
+    </section>
+
+    <!-- Tier Cards -->
+    <section class="mb-20">
+      <h2 class="text-2xl font-bold text-white text-center mb-3">Pick your tier</h2>
+      <p class="text-gray-400 text-center mb-8 text-sm">One payment. Access forever. All future updates for your tier included.</p>
+
+      <div class="grid sm:grid-cols-3 gap-6">
+        <!-- Solo -->
+        <div class="bg-gray-900 rounded-xl p-6 border border-gray-800 flex flex-col">
+          <div class="mb-6">
+            <div class="text-sm text-gray-500 uppercase tracking-wide mb-1">Solo</div>
+            <div class="flex items-end gap-2">
+              <div class="text-4xl font-bold text-white">$59</div>
+              <div class="text-gray-500 mb-1">one-time</div>
+            </div>
+            <div class="text-sm text-gray-500 mt-1">Maps to Pro plan, 1 app</div>
+          </div>
+          <ul class="space-y-3 text-sm text-gray-400 flex-1 mb-8">
+            <li class="flex gap-2.5 items-start"><span class="text-green-400 mt-0.5">✓</span> 1 app</li>
+            <li class="flex gap-2.5 items-start"><span class="text-green-400 mt-0.5">✓</span> Unlimited monitors</li>
+            <li class="flex gap-2.5 items-start"><span class="text-green-400 mt-0.5">✓</span> 90-day history retention</li>
+            <li class="flex gap-2.5 items-start"><span class="text-green-400 mt-0.5">✓</span> Slack, email, PagerDuty, webhook alerts</li>
+            <li class="flex gap-2.5 items-start"><span class="text-green-400 mt-0.5">✓</span> REST API access</li>
+            <li class="flex gap-2.5 items-start"><span class="text-green-400 mt-0.5">✓</span> 1 status page</li>
+            <li class="flex gap-2.5 items-start"><span class="text-green-400 mt-0.5">✓</span> All future Pro features</li>
+          </ul>
+          <a href="/#waitlist" class="block text-center border border-gray-700 hover:border-gray-500 text-gray-300 font-medium py-2.5 rounded-lg transition-colors">
+            Get Solo LTD
+          </a>
+        </div>
+
+        <!-- Pro (Most Popular) -->
+        <div class="bg-gray-900 rounded-xl p-6 border border-green-500/40 flex flex-col relative">
+          <div class="absolute -top-3 left-1/2 -translate-x-1/2 bg-green-500 text-black text-xs font-semibold px-3 py-0.5 rounded-full whitespace-nowrap">
+            Most popular
+          </div>
+          <div class="mb-6">
+            <div class="text-sm text-gray-500 uppercase tracking-wide mb-1">Pro</div>
+            <div class="flex items-end gap-2">
+              <div class="text-4xl font-bold text-white">$149</div>
+              <div class="text-gray-500 mb-1">one-time</div>
+            </div>
+            <div class="text-sm text-gray-500 mt-1">Maps to Pro plan, 5 apps</div>
+          </div>
+          <ul class="space-y-3 text-sm text-gray-400 flex-1 mb-8">
+            <li class="flex gap-2.5 items-start"><span class="text-green-400 mt-0.5">✓</span> 5 apps</li>
+            <li class="flex gap-2.5 items-start"><span class="text-green-400 mt-0.5">✓</span> Unlimited monitors</li>
+            <li class="flex gap-2.5 items-start"><span class="text-green-400 mt-0.5">✓</span> 90-day history retention</li>
+            <li class="flex gap-2.5 items-start"><span class="text-green-400 mt-0.5">✓</span> 3 team members</li>
+            <li class="flex gap-2.5 items-start"><span class="text-green-400 mt-0.5">✓</span> Slack, email, PagerDuty, webhook alerts</li>
+            <li class="flex gap-2.5 items-start"><span class="text-green-400 mt-0.5">✓</span> REST API access</li>
+            <li class="flex gap-2.5 items-start"><span class="text-green-400 mt-0.5">✓</span> 1 status page per app</li>
+            <li class="flex gap-2.5 items-start"><span class="text-green-400 mt-0.5">✓</span> All future Pro features</li>
+          </ul>
+          <a href="/#waitlist" class="block text-center bg-green-500 hover:bg-green-400 text-black font-semibold py-2.5 rounded-lg transition-colors">
+            Get Pro LTD
+          </a>
+        </div>
+
+        <!-- Agency -->
+        <div class="bg-gray-900 rounded-xl p-6 border border-gray-800 flex flex-col">
+          <div class="mb-6">
+            <div class="text-sm text-gray-500 uppercase tracking-wide mb-1">Agency</div>
+            <div class="flex items-end gap-2">
+              <div class="text-4xl font-bold text-white">$299</div>
+              <div class="text-gray-500 mb-1">one-time</div>
+            </div>
+            <div class="text-sm text-gray-500 mt-1">Maps to Team plan, 15 apps</div>
+          </div>
+          <ul class="space-y-3 text-sm text-gray-400 flex-1 mb-8">
+            <li class="flex gap-2.5 items-start"><span class="text-green-400 mt-0.5">✓</span> 15 apps</li>
+            <li class="flex gap-2.5 items-start"><span class="text-green-400 mt-0.5">✓</span> Unlimited monitors</li>
+            <li class="flex gap-2.5 items-start"><span class="text-green-400 mt-0.5">✓</span> 1-year history retention</li>
+            <li class="flex gap-2.5 items-start"><span class="text-green-400 mt-0.5">✓</span> Unlimited team members</li>
+            <li class="flex gap-2.5 items-start"><span class="text-green-400 mt-0.5">✓</span> All alert channels</li>
+            <li class="flex gap-2.5 items-start"><span class="text-green-400 mt-0.5">✓</span> Unlimited status pages</li>
+            <li class="flex gap-2.5 items-start"><span class="text-green-400 mt-0.5">✓</span> Custom alert rules</li>
+            <li class="flex gap-2.5 items-start"><span class="text-green-400 mt-0.5">✓</span> Priority support (24h email)</li>
+            <li class="flex gap-2.5 items-start"><span class="text-green-400 mt-0.5">✓</span> All future Team features</li>
+          </ul>
+          <a href="/#waitlist" class="block text-center border border-gray-700 hover:border-gray-500 text-gray-300 font-medium py-2.5 rounded-lg transition-colors">
+            Get Agency LTD
+          </a>
+        </div>
+      </div>
+    </section>
+
+    <!-- What's Included -->
+    <section class="mb-20">
+      <h2 class="text-2xl font-bold text-white text-center mb-3">What every LTD buyer gets</h2>
+      <p class="text-gray-400 text-center mb-8 text-sm max-w-xl mx-auto">
+        Regardless of tier, here is what comes with your lifetime deal.
+      </p>
+
+      <div class="grid sm:grid-cols-2 gap-6 max-w-3xl mx-auto">
+        <div class="bg-gray-900 border border-gray-800 rounded-xl p-6">
+          <h3 class="font-semibold text-white mb-3">Permanent access</h3>
+          <p class="text-sm text-gray-400">
+            Your account stays active as long as Crontinel exists. No recurring charges, ever.
+            Pay once and you are done.
+          </p>
+        </div>
+        <div class="bg-gray-900 border border-gray-800 rounded-xl p-6">
+          <h3 class="font-semibold text-white mb-3">All future updates for your tier</h3>
+          <p class="text-sm text-gray-400">
+            New features, integrations, and improvements shipped to your plan level are yours automatically.
+            No extra cost.
+          </p>
+        </div>
+        <div class="bg-gray-900 border border-gray-800 rounded-xl p-6">
+          <h3 class="font-semibold text-white mb-3">Priority access to new features</h3>
+          <p class="text-sm text-gray-400">
+            LTD holders get early access to beta features before they roll out to monthly subscribers.
+            You helped fund the product early; you get to try things first.
+          </p>
+        </div>
+        <div class="bg-gray-900 border border-gray-800 rounded-xl p-6">
+          <h3 class="font-semibold text-white mb-3">30-day money-back guarantee</h3>
+          <p class="text-sm text-gray-400">
+            Not happy? Email us within 30 days and get a full refund. No forms, no hoops.
+          </p>
+        </div>
+        <div class="bg-gray-900 border border-gray-800 rounded-xl p-6">
+          <h3 class="font-semibold text-white mb-3">Direct Stripe checkout</h3>
+          <p class="text-sm text-gray-400">
+            No marketplace middlemen. You buy directly from us through Stripe.
+            Clean receipt, instant activation.
+          </p>
+        </div>
+        <div class="bg-gray-900 border border-gray-800 rounded-xl p-6">
+          <h3 class="font-semibold text-white mb-3">Upgrade path available</h3>
+          <p class="text-sm text-gray-400">
+            Start with Solo and outgrow it? Upgrade to Pro or Agency by paying the difference.
+            No need to rebuy from scratch.
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <!-- FAQ -->
+    <section class="mb-20">
+      <h2 class="text-2xl font-bold text-white text-center mb-8">Frequently asked questions</h2>
+      <div class="space-y-6 max-w-2xl mx-auto">
+        {faqs.map((item) => (
+          <div class="border-b border-gray-800 pb-6">
+            <h3 class="font-medium text-white mb-2">{item.q}</h3>
+            <p class="text-sm text-gray-400">{item.a}</p>
+          </div>
+        ))}
+      </div>
+    </section>
+
+    <!-- Final CTA -->
+    <section class="text-center mb-8">
+      <div class="bg-gray-900 border border-gray-800 rounded-xl p-8 sm:p-12 max-w-2xl mx-auto">
+        <h2 class="text-2xl sm:text-3xl font-bold text-white mb-4">
+          250 codes. Once they sell out, this page goes away.
+        </h2>
+        <p class="text-gray-400 mb-6 max-w-lg mx-auto">
+          Lock in lifetime access to Crontinel at the lowest price it will ever be.
+          The deal runs for 3 weeks or until all codes are claimed, whichever comes first.
+        </p>
+        <div class="flex flex-col sm:flex-row gap-3 justify-center">
+          <a href="/#waitlist" class="inline-block bg-green-500 hover:bg-green-400 text-black font-semibold py-3 px-8 rounded-lg transition-colors">
+            Grab your lifetime deal
+          </a>
+          <a href="/pricing" class="inline-block border border-gray-700 hover:border-gray-500 text-gray-300 font-medium py-3 px-8 rounded-lg transition-colors">
+            Compare regular pricing
+          </a>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <Footer />
+</Base>
+
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "FAQPage",
+  "mainEntity": [
+    {
+      "@type": "Question",
+      "name": "What does \"lifetime\" mean exactly?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "It means you pay once and keep access to your tier for as long as Crontinel exists as a product. No recurring charges, no renewals. Your plan stays active indefinitely."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Will I get future features?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Yes. You get every feature released for your tier. If we add new alert channels, dashboard improvements, or integrations to the Pro plan, Pro LTD holders get them automatically. The same applies to Team-tier features for Agency LTD holders."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Can I upgrade my tier later?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Yes. You can upgrade from Solo to Pro or from Pro to Agency by paying the difference. Contact support after purchase and we will generate an upgrade link."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Is there a refund policy?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "We offer a 30-day money-back guarantee, no questions asked. If Crontinel is not the right fit, email support and you will get a full refund."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "What if the product shuts down?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "If we ever discontinue the SaaS, all LTD holders will receive at least 12 months advance notice. The open-source Laravel package will remain available on GitHub under the MIT license regardless."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Can I use the LTD for client projects?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Absolutely. Each app slot is one Laravel application, and it does not matter who owns it. Freelancers and agencies use the Agency tier to monitor client apps from a single dashboard."
+      }
+    }
+  ]
+}
+</script>
