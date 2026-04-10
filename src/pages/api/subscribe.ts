@@ -20,23 +20,21 @@ export const POST: APIRoute = async ({ request, locals }) => {
       });
     }
 
-    // Cloudflare Workers: secrets via import.meta.env (Astro) or process.env fallback
-    // For Astro SSR with Cloudflare, secrets are injected as env vars at runtime
+    // Cloudflare Workers SSR: secrets injected via cfContext.runtime.env
+    const cfRuntime = (locals as any)?.cfContext?.runtime;
     const resendApiKey = import.meta.env.RESEND_API_KEY
-      ?? (locals as any)?.runtime?.env?.RESEND_API_KEY
+      ?? (locals as any)?.cfContext?.runtime?.env?.RESEND_API_KEY
       ?? process.env.RESEND_API_KEY;
 
     const resendAudienceId = import.meta.env.RESEND_AUDIENCE_ID
-      ?? (locals as any)?.runtime?.env?.RESEND_AUDIENCE_ID
+      ?? (locals as any)?.cfContext?.runtime?.env?.RESEND_AUDIENCE_ID
       ?? process.env.RESEND_AUDIENCE_ID;
 
     if (!resendApiKey || !resendAudienceId) {
       console.error('Missing env vars:', {
+        cfRuntimeEnv: cfRuntime?.env ? Object.keys(cfRuntime.env).filter(k => k.includes('RESEND')) : 'none',
         hasApiKey: !!resendApiKey,
         hasAudienceId: !!resendAudienceId,
-        importMetaEnvKeys: Object.keys(import.meta.env || {}).filter(k => k.includes('RESEND')),
-        localsKeys: Object.keys(locals || {}),
-        processEnvKeys: Object.keys(process.env || {}).filter(k => k.includes('RESEND')),
       });
       return new Response(JSON.stringify({ ok: false, error: 'Server misconfigured' }), {
         status: 500,
