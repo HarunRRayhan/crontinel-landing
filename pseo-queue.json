@@ -1,7 +1,5 @@
 {
   "pending": [
-    "horizon-pause",
-    "horizon-continue",
     "horizon-purge",
     "model-prune",
     "db-backup",
@@ -53,6 +51,8 @@
     "queue-forget",
     "queue-failed",
     "horizon-work",
-    "horizon-terminate"
+    "horizon-terminate",
+    "horizon-pause",
+    "horizon-continue"
   ]
 }

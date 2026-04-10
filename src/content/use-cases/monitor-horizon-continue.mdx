@@ -1,0 +1,104 @@
+---
+title: "Monitoring horizon:continue in Laravel Production"
+description: "Monitor Laravel's horizon:continue command in production with instant alerts for failures, slow execution, and unexpected exits."
+date: 2026-04-10
+---
+
+Your SSH into a production server on a Friday afternoon to run a schema migration. You pause Horizon first, as you should. The migration completes, you run `php artisan config:cache`, and you close your laptop. On Monday morning, the support inbox has 200 tickets. Password resets never sent. Webhook retries never fired. Subscription renewals never processed. Horizon was paused for 60 hours because you forgot to run `php artisan horizon:continue`. Every health check reported green because the supervisor processes were alive, connected to Redis, and reporting heartbeats. They just were not doing any work.
+
+The `horizon:continue` command is the only thing that undoes a pause. If it never runs, your queues are frozen indefinitely with zero indication from standard monitoring.
+
+## What horizon:continue Actually Does
+
+When you call `php artisan horizon:continue`, Horizon writes a value to a Redis key:
+
+```bash
+redis-cli GET horizon:status
+# "paused" before continue, "running" after
+```
+
+The master supervisor polls this key on every loop iteration. When it reads `running`, it instructs all supervisors to start pulling jobs from their configured queues again. Workers resume immediately. There is no restart, no process cycling, no code reload. The same workers that were idling pick up exactly where they left off.
+
+In Horizon 5.x (Laravel 10, 11, and 12), you can also resume individual supervisors with `horizon:continue-supervisor`. This only matters if you previously paused specific supervisors using `horizon:pause-supervisor` rather than pausing globally. A global `horizon:continue` does not resume individually paused supervisors: those require their own targeted continue call.
+
+## Why horizon:continue Fails Silently
+
+The command itself almost never fails. It writes a key to Redis and exits with code 0. The problem is that it never runs at all. Three common scenarios:
+
+**Deploy scripts that exit early.** If your deploy pauses Horizon, runs migrations, and then resumes Horizon, any failure before the resume step means `horizon:continue` is skipped:
+
+```bash
+# Dangerous: horizon:continue never runs if migrate fails
+php artisan horizon:pause
+php artisan migrate --force    # exits non-zero
+php artisan horizon:continue   # never reached
+```
+
+**Manual pauses without a runbook.** Someone pauses Horizon to investigate a Redis memory spike, gets pulled into a meeting, and forgets. There is no built-in timer or auto-resume in Horizon.
+
+**Per-supervisor pauses left behind.** A developer pauses `supervisor-payments` to debug a Stripe webhook issue, fixes it, and runs `horizon:continue`. But the global continue does not affect individually paused supervisors. The payments queue stays frozen.
+
+## Detecting a Missing Resume
+
+The simplest detection is polling the Redis key from outside the queue system. This check must not be dispatched as a queued job, because the queue is exactly what is broken:
+
+```php
+// routes/console.php (Laravel 11+) or app/Console/Kernel.php (Laravel 10)
+use Illuminate\Support\Facades\Redis;
+use Illuminate\Support\Facades\Notification;
+
+Schedule::call(function () {
+    $status = Redis::get('horizon:status');
+
+    if ($status === 'paused') {
+        Notification::route('slack', config('services.slack.alerts_webhook'))
+            ->notify(new \App\Notifications\HorizonStillPaused());
+    }
+})->everyFiveMinutes();
+```
+
+This works, but it has a ceiling. If your scheduler itself is down, or if the cron daemon is misconfigured after a server rebuild, this check never fires. You are relying on the same infrastructure to monitor itself.
+
+For per-supervisor awareness, query the Horizon contracts directly:
+
+```php
+use Laravel\Horizon\Contracts\SupervisorRepository;
+
+$supervisors = app(SupervisorRepository::class)->all();
+
+foreach ($supervisors as $supervisor) {
+    if ($supervisor->status === 'paused') {
+        Log::warning("Supervisor {$supervisor->name} is still paused.");
+    }
+}
+```
+
+## Safer Deploy Patterns
+
+Wrap your resume in a shell trap so it executes regardless of script exit status:
+
+```bash
+php artisan horizon:pause
+trap "php artisan horizon:continue" EXIT
+
+php artisan migrate --force
+php artisan config:cache
+php artisan route:cache
+# horizon:continue fires automatically on exit, even on failure
+```
+
+If you use a zero-downtime deployer like Envoyer or Deployer, place the `horizon:continue` call in the "after" or "cleanup" hook rather than inline in the deploy script. These hooks run even when the main deploy task fails.
+
+For teams that pause individual supervisors, build a post-deploy step that explicitly continues all of them:
+
+```bash
+php artisan horizon:continue
+php artisan horizon:continue-supervisor supervisor-payments
+php artisan horizon:continue-supervisor supervisor-notifications
+```
+
+Redundant continues are harmless. Running `horizon:continue` on an already-running Horizon is a no-op.
+
+## External Monitoring With Crontinel
+
+The self-monitoring approaches above all share one weakness: they depend on the system they are monitoring. If your scheduler stops, your Redis config drifts, or your server is unreachable, the alert never fires. Crontinel polls the `horizon:status` key from outside your infrastructure on its own schedule. When a pause persists beyond an expected window, it fires an alert with the duration and the number of pending jobs accumulated during the gap. After `horizon:continue` runs and the status flips back to `running`, Crontinel logs the resume event, records total pause duration, and reports the backlog size so you can assess the blast radius without manually querying Redis.
