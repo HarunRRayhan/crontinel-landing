@@ -1,5 +1,4 @@
 name = "crontinel-landing"
 compatibility_date = "2026-04-05"
-account_id = "521e07f80bbfb2000edd88a75c73f34b"
 main = "dist/server/entry.mjs"
 assets = { directory = "dist/client" }

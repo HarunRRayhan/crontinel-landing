@@ -1,0 +1,39 @@
+name: Deploy to Cloudflare Workers
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Deploy to Cloudflare Workers via API
+        run: |
+          cd dist/server
+          zip -r worker.zip entry.mjs chunks virtual_astro_middleware.mjs wrangler.json
+          echo "WORKER_SIZE=$(wc -c < worker.zip)" >> $GITHUB_ENV
+          
+          RESPONSE=$(curl -s -X PUT \
+            -H "Authorization: Bearer ${{ secrets.CLOUDFLARE_API_TOKEN }}" \
+            -H "Content-Type: application/zip" \
+            --data-binary @worker.zip \
+            "https://api.cloudflare.com/client/v4/accounts/${{ secrets.CLOUDFLARE_ACCOUNT_ID }}/workers/scripts/crontinel-landing")
+          
+          echo "Deploy response: $RESPONSE"
+          echo "$RESPONSE" | python3 -c "import sys,json; d=json.load(sys.stdin); print('Success:', d.get('success')); print('Errors:', d.get('errors'))"
