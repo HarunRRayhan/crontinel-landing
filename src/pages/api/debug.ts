@@ -7,9 +7,11 @@ export const GET: APIRoute = async ({ request, locals }) => {
     const cfRuntime = (locals as any)?.cfContext?.runtime;
     const cfEnv = cfRuntime?.env;
     const result = {
-      cfRuntimeEnv: cfEnv ? Object.keys(cfEnv).filter(k => k.includes('RESEND')) : 'none',
-      cfEnvRESEND_API_KEY: cfEnv?.RESEND_API_KEY ? 'PRESENT' : 'MISSING',
-      cfEnvRESEND_AUDIENCE_ID: cfEnv?.RESEND_AUDIENCE_ID ? 'PRESENT' : 'MISSING',
+      cfRuntimeEnv: cfEnv ? Object.keys(cfEnv) : 'none',
+      cfEnvValues: cfEnv ? {
+        RESEND_API_KEY: cfEnv.RESEND_API_KEY ? 'HAS_VALUE' : 'UNDEFINED',
+        RESEND_AUDIENCE_ID: cfEnv.RESEND_AUDIENCE_ID ? 'HAS_VALUE' : 'UNDEFINED',
+      } : 'cfEnv is falsy',
     };
     return new Response(JSON.stringify(result), {
       status: 200,

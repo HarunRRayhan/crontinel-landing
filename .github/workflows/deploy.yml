@@ -30,6 +30,10 @@ jobs:
           compatibility_date = "2026-04-05"
           main = "dist/server/entry.mjs"
           assets = { directory = "dist/client" }
+
+          [vars]
+          RESEND_API_KEY = "PLACEHOLDER"
+          RESEND_AUDIENCE_ID = "6a6065e7-5e40-43fd-a109-20a60e501457"
           EOF
 
       - name: Deploy to Cloudflare Workers
