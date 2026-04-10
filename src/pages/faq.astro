@@ -5,78 +5,51 @@ import Footer from '../components/Footer.astro';
 
 const faqs = [
   {
-    q: 'Which versions of Laravel are supported?',
-    a: `Crontinel supports Laravel 11, 12, and 13. We track Laravel's active support window and drop EOL versions when they exit security support. If you're on Laravel 10 or older, upgrading is worth it for other reasons too — but Crontinel won't be one of them until you do.`,
+    q: 'What exactly does Crontinel monitor?',
+    a: `Crontinel tracks three things in your Laravel app: scheduled tasks (cron jobs), queues, and Horizon. You get visibility into whether jobs ran on time, how long they took, whether they failed, and what your queue backlog looks like. It is not just a "did my server respond" ping. It actually understands your Laravel internals.`,
   },
   {
-    q: 'Which PHP versions are supported?',
-    a: `PHP 8.2, 8.3, and 8.4 are supported. We run CI against all three on every release. PHP 8.1 reached EOL in December 2024, so it's not tested or supported. In practice, if you're running a modern Laravel version you're already in the right PHP range.`,
+    q: 'How is this different from Healthchecks.io or Cronitor?',
+    a: `Healthchecks.io is a dead man's switch. It knows a ping didn't arrive, but it has no idea why your job failed or what your queue depth looks like. Cronitor works but it is expensive and treats Laravel like any other language, so you end up writing boilerplate to get useful data out. Crontinel is a first-class Laravel package that hooks directly into the scheduler, queue system, and Horizon with zero configuration beyond a service provider.`,
   },
   {
-    q: 'Can I use Crontinel without the SaaS?',
-    a: `Yes. The OSS package (<code class="text-green-400 bg-gray-800 px-1 rounded text-xs">crontinel/laravel</code>) is MIT licensed and works completely standalone. You get a local Blade dashboard at <code class="text-green-400 bg-gray-800 px-1 rounded text-xs">/crontinel</code>, local alert channels (Slack, email, webhook, PagerDuty), and the CLI health check — all without ever touching app.crontinel.com. The SaaS is optional and adds cross-app visibility, longer history, and team access.`,
+    q: 'Does it work with frameworks other than Laravel?',
+    a: `There is a framework-agnostic PHP package (<code class="text-green-400 bg-gray-800 px-1 rounded text-xs">crontinel/php</code>) for vanilla PHP or other frameworks, but the richest experience is with Laravel 11, 12, and 13. If you are running something outside the PHP ecosystem, Crontinel is not the right tool for you today. PHP 8.2 or higher is required.`,
   },
   {
-    q: 'Do I need Horizon?',
-    a: `No. Horizon monitoring is optional. If Crontinel detects Horizon isn't installed, it skips that section entirely — no errors, no config needed. You still get scheduled task monitoring and the local dashboard. If you do run Horizon, Crontinel reads its Redis keys directly to report supervisor state and queue depths without any changes to your Horizon config.`,
+    q: 'Is there a free tier?',
+    a: `Yes. The free plan covers one app with up to five monitors and seven days of history. No credit card required. It is enough to monitor a side project or evaluate whether Crontinel fits your workflow before committing to a paid plan.`,
   },
   {
-    q: 'Which queue drivers are supported for queue depth monitoring?',
-    a: `Redis and database queue drivers are supported. If you're using Redis (the most common setup with Horizon), Crontinel reads queue depths directly from Redis. The database driver is also supported via SQL queries against the <code class="text-green-400 bg-gray-800 px-1 rounded text-xs">jobs</code> table. SQS and other drivers aren't currently supported for depth monitoring, though scheduled task monitoring works regardless of your queue driver.`,
+    q: 'How do I get started?',
+    a: `Install the package with <code class="text-green-400 bg-gray-800 px-1 rounded text-xs">composer require crontinel/laravel</code>, publish the config, and set your API key. The whole setup takes under two minutes. A self-hosted dashboard is included out of the box, so you can start seeing data immediately without sending anything to an external service.`,
   },
   {
-    q: 'What data does the package send to app.crontinel.com?',
-    a: `When you configure an API key, the package syncs run records (task name, started at, duration, exit code), Horizon supervisor states, and queue depth snapshots. That's it. No source code, no environment variables, no user data, no request payloads. The sync is one-way: your app pushes data to the SaaS; nothing is pulled back to your server beyond a confirmation response.`,
+    q: 'What alert channels are supported?',
+    a: `Slack, email, PagerDuty, and webhooks. Webhooks support HMAC signature verification so you can trust the payload is actually from Crontinel. You can configure different channels per monitor if you want Slack alerts for non-critical jobs and PagerDuty for the ones that wake people up.`,
   },
   {
-    q: 'Is my cron output or job logs sent to the SaaS?',
-    a: `No. Crontinel captures exit codes and durations — not stdout, stderr, or any job payload content. If a scheduled command writes to a log file, that file stays on your server. The SaaS has no access to your application logs. This is intentional: monitoring metadata is useful; shipping raw logs raises privacy concerns that we don't want to be in the business of managing.`,
+    q: 'Can I self-host everything or do I need the SaaS?',
+    a: `The Laravel package ships with a built-in dashboard, so you can run entirely self-hosted with no external dependencies. The SaaS at app.crontinel.com is optional and exists for teams that want centralized monitoring across multiple apps, longer history retention, and managed alert routing. Neither option locks you in.`,
   },
   {
-    q: 'How often does the package ping the SaaS?',
-    a: `Scheduled task data is sent after each <code class="text-green-400 bg-gray-800 px-1 rounded text-xs">php artisan schedule:run</code> invocation — typically once per minute if you've set up the standard cron entry. Horizon and queue depth data syncs on the polling interval, which defaults to every 30 seconds (<code class="text-green-400 bg-gray-800 px-1 rounded text-xs">CRONTINEL_HORIZON_POLL_INTERVAL=30</code>). All syncs are lightweight JSON payloads with no file uploads.`,
+    q: 'What does pricing look like for a small team?',
+    a: `Pro is $19/month for up to five apps with unlimited monitors and 90 days of history. Team is $49/month for unlimited everything. Annual billing saves you 20%. There are also lifetime deals available if you prefer a one-time payment. The free tier works fine if you just need basic monitoring for a single app.`,
   },
   {
-    q: 'Will I get spammed with repeated alerts for the same issue?',
-    a: `No. Crontinel has a 5-minute cooldown window on alerts. If the same condition triggers again within 5 minutes, the alert is deduplicated and suppressed. You get one alert when something goes wrong, then silence until the issue is resolved or the cooldown expires. This applies to all alert channels: Slack, email, PagerDuty, and webhook.`,
+    q: 'What is the MCP server for?',
+    a: `The MCP server lets AI coding assistants (like Claude or Copilot) query your Crontinel data directly. Your AI assistant can check job status, look up recent failures, or inspect queue health without you switching context to a dashboard. It is useful if you already work with an AI assistant in your editor.`,
   },
   {
-    q: 'What happens to alerts if app.crontinel.com goes down?',
-    a: `Alerts still fire. The alert channels (Slack, email, webhook, PagerDuty) are configured in your local <code class="text-green-400 bg-gray-800 px-1 rounded text-xs">config/crontinel.php</code> and sent directly from your server — not routed through the SaaS. If app.crontinel.com is unreachable, the only thing affected is the cloud sync: run history won't appear in the dashboard until the connection is restored. Your alerts keep working.`,
-  },
-  {
-    q: 'Does Crontinel work with Laravel Octane?',
-    a: `Scheduled task monitoring works with Octane. Crontinel hooks into Laravel's scheduler event lifecycle, which Octane doesn't change. Horizon monitoring also works as long as your Redis connection is accessible from the Octane worker process, which it normally is. If you run into issues, check that the Crontinel config is loaded correctly in your Octane bootstrap — the package registers a service provider, which Octane handles like any other provider.`,
-  },
-  {
-    q: 'What does the free plan include?',
-    a: `One connected app, 7 days of run history in the cloud dashboard, and all four alert channels (Slack, email, webhook, PagerDuty). No credit card required. The OSS package itself is MIT and always free — the free cloud plan just limits how many apps you can connect and how far back you can look. If you're running a single app and don't need long history, the free tier might be all you need.`,
-  },
-  {
-    q: 'What does Pro add?',
-    a: `Pro ($19/month, or $182/year) gives you more connected apps and 90 days of run history. It's aimed at indie developers or small teams running a handful of Laravel apps who want longer trend data. If you pay annually, you save 20%. Team ($49/month) adds unlimited apps and team member access — useful for agencies or teams where multiple people need to see the dashboard.`,
-  },
-  {
-    q: 'Is the package or dashboard open source?',
-    a: `The OSS package (<code class="text-green-400 bg-gray-800 px-1 rounded text-xs">crontinel/laravel</code> on Packagist) is MIT licensed and the source is on GitHub. The local Blade dashboard bundled with the package is also open source. The SaaS application at app.crontinel.com is proprietary — it's not open source, but you're never required to use it.`,
-  },
-  {
-    q: 'How do I remove Crontinel from my app?',
-    a: `Run the migrations rollback, remove the package, and clean up your env vars:
-<pre class="mt-2 bg-gray-900 rounded p-3 text-xs text-gray-300 overflow-x-auto"><code>php artisan migrate:rollback --path=vendor/crontinel/laravel/database/migrations
-composer remove crontinel/laravel</code></pre>
-Then remove any <code class="text-green-400 bg-gray-800 px-1 rounded text-xs">CRONTINEL_*</code> entries from your <code class="text-green-400 bg-gray-800 px-1 rounded text-xs">.env</code> and delete <code class="text-green-400 bg-gray-800 px-1 rounded text-xs">config/crontinel.php</code> if you published it. That's it — no residue.`,
-  },
-  {
-    q: 'What is the MCP server?',
-    a: `The MCP server (<code class="text-green-400 bg-gray-800 px-1 rounded text-xs">@crontinel/mcp-server</code> on npm) lets AI tools like Claude Desktop or Cursor query your Crontinel monitoring data. It proxies requests to app.crontinel.com's API using your API key, so you can ask an AI assistant things like "what's the current state of my Horizon supervisors" or "did any cron jobs fail in the last hour." It requires a cloud account and API key — it doesn't work with the standalone OSS package alone.`,
+    q: 'Is this package open source?',
+    a: `Yes, <code class="text-green-400 bg-gray-800 px-1 rounded text-xs">crontinel/laravel</code> is MIT-licensed and fully open source. You can read every line of code, fork it, and contribute back. The SaaS layer at app.crontinel.com is a separate commercial product, but the core monitoring package and self-hosted dashboard are free and open.`,
   },
 ];
 ---
 
 <Base
   title="FAQ — Crontinel"
-  description="Common questions about Crontinel: installation, plans, data privacy, supported versions, and more."
+  description="Common questions about Crontinel: what it monitors, how it compares to alternatives, pricing, self-hosting, and getting started."
 >
   <Nav />
 
@@ -103,7 +76,7 @@ Then remove any <code class="text-green-400 bg-gray-800 px-1 rounded text-xs">CR
         href="https://discord.com/invite/clawd"
         class="inline-block text-sm text-green-400 hover:text-green-300 transition-colors"
       >
-        Ask in the Discord community →
+        Ask in the Discord community &rarr;
       </a>
     </div>
   </main>
