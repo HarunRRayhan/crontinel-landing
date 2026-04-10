@@ -4,21 +4,22 @@ import type { APIRoute } from 'astro';
 
 export const GET: APIRoute = async ({ request, locals }) => {
   try {
-    const cfContext = (locals as any)?.cfContext;
     const result: Record<string, unknown> = {
-      cfContextKeys: cfContext ? Object.keys(cfContext) : 'none',
-      cfContextCache: typeof cfContext?.cache,
-      cfContextProps: cfContext?.props ? Object.keys(cfContext.props) : 'none',
-      cfContextExports: typeof cfContext?.exports,
-      envHasResend: typeof env !== 'undefined' ? Object.keys(env).filter(k => k.includes('RESEND')) : 'env not defined',
+      localsConstructor: locals?.constructor?.name,
+      localsKeys: Object.keys(locals || {}),
+      runtime: (locals as any)?.runtime,
+      cfContext: (locals as any)?.cfContext,
+      allLocals: JSON.stringify(Object.keys(locals || {})),
     };
+
     // @ts-ignore
     if (typeof globalThis !== 'undefined') {
       // @ts-ignore
       const gt = globalThis;
-      result.globalKeys = Object.keys(gt).filter(k => k.includes('RESEND') || k.includes('env') || k.includes('secret'));
       result.envVarValue = typeof env !== 'undefined' ? env.RESEND_API_KEY : 'env undefined';
+      result.globalKeys_sample = Object.keys(gt).slice(0, 20);
     }
+
     return new Response(JSON.stringify(result), {
       status: 200,
       headers: { 'Content-Type': 'application/json' },
