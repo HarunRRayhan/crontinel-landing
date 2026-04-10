@@ -4,14 +4,17 @@ import type { APIRoute } from 'astro';
 
 export const GET: APIRoute = async ({ request, locals }) => {
   try {
-    const cfRuntime = (locals as any)?.cfContext?.runtime;
-    const cfEnv = cfRuntime?.env;
+    // @ts-ignore
+    const cfContext = (locals as any)?.cfContext;
     const result = {
-      cfRuntimeEnv: cfEnv ? Object.keys(cfEnv) : 'none',
-      cfEnvValues: cfEnv ? {
-        RESEND_API_KEY: cfEnv.RESEND_API_KEY ? 'HAS_VALUE' : 'UNDEFINED',
-        RESEND_AUDIENCE_ID: cfEnv.RESEND_AUDIENCE_ID ? 'HAS_VALUE' : 'UNDEFINED',
-      } : 'cfEnv is falsy',
+      localsKeys: Object.keys(locals || {}),
+      cfContextKeys: cfContext ? Object.keys(cfContext) : 'none',
+      cfContextRuntime: cfContext?.runtime ? Object.keys(cfContext.runtime) : 'none',
+      cfContextEnv: cfContext?.env ? Object.keys(cfContext.env).filter(k => k.includes('RESEND')) : 'none',
+      cfContextEnvValues: cfContext?.env ? {
+        RESEND_API_KEY: cfContext.env.RESEND_API_KEY,
+        RESEND_AUDIENCE_ID: cfContext.env.RESEND_AUDIENCE_ID,
+      } : 'none',
     };
     return new Response(JSON.stringify(result), {
       status: 200,

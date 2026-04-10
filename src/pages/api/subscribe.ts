@@ -20,19 +20,20 @@ export const POST: APIRoute = async ({ request, locals }) => {
       });
     }
 
-    // Cloudflare Workers SSR: secrets injected via cfContext.runtime.env
-    const cfRuntime = (locals as any)?.cfContext?.runtime;
-    const resendApiKey = import.meta.env.RESEND_API_KEY
-      ?? (locals as any)?.cfContext?.runtime?.env?.RESEND_API_KEY
+    // Cloudflare Workers SSR: secrets injected via locals.cfContext.env
+    const cfEnv = (locals as any)?.cfContext?.env;
+
+    const resendApiKey = cfEnv?.RESEND_API_KEY
+      ?? import.meta.env.RESEND_API_KEY
       ?? process.env.RESEND_API_KEY;
 
-    const resendAudienceId = import.meta.env.RESEND_AUDIENCE_ID
-      ?? (locals as any)?.cfContext?.runtime?.env?.RESEND_AUDIENCE_ID
+    const resendAudienceId = cfEnv?.RESEND_AUDIENCE_ID
+      ?? import.meta.env.RESEND_AUDIENCE_ID
       ?? process.env.RESEND_AUDIENCE_ID;
 
     if (!resendApiKey || !resendAudienceId) {
       console.error('Missing env vars:', {
-        cfRuntimeEnv: cfRuntime?.env ? Object.keys(cfRuntime.env).filter(k => k.includes('RESEND')) : 'none',
+        cfEnvRESEND: cfEnv ? Object.keys(cfEnv).filter(k => k.includes('RESEND')) : 'none',
         hasApiKey: !!resendApiKey,
         hasAudienceId: !!resendAudienceId,
       });
