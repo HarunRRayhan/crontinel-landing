@@ -1,6 +1,5 @@
 name = "crontinel-landing"
 compatibility_date = "2026-04-05"
-main = "dist/server/entry.mjs"
-assets = { directory = "dist/client" }
-
-[vars]
+compatibility_flags = ["nodejs_compat"]
+main = "dist/_worker.js"
+assets = { directory = "dist" }
