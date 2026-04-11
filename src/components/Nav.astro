@@ -15,6 +15,7 @@ const navLinks = [
       <span>Crontinel</span>
     </a>
 
+    <!-- Desktop nav -->
     <div class="hidden md:flex items-center gap-6">
       {navLinks.map((link) => (
         <a
@@ -27,10 +28,65 @@ const navLinks = [
       ))}
     </div>
 
-    <div class="flex items-center gap-3">
+    <div class="hidden md:flex items-center gap-3">
       <a href="/#waitlist" class="text-sm bg-green-500 hover:bg-green-400 text-black font-medium px-4 py-1.5 rounded transition-colors">
         Get early access
       </a>
     </div>
+
+    <!-- Mobile hamburger -->
+    <button
+      id="mobile-menu-btn"
+      class="md:hidden p-2 text-gray-400 hover:text-white transition-colors"
+      aria-label="Toggle mobile menu"
+      aria-expanded="false"
+    >
+      <svg id="hamburger-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+        <line x1="3" y1="6" x2="21" y2="6" />
+        <line x1="3" y1="12" x2="21" y2="12" />
+        <line x1="3" y1="18" x2="21" y2="18" />
+      </svg>
+      <svg id="close-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" class="hidden">
+        <line x1="18" y1="6" x2="6" y2="18" />
+        <line x1="6" y1="6" x2="18" y2="18" />
+      </svg>
+    </button>
   </nav>
+
+  <!-- Mobile menu -->
+  <div
+    id="mobile-menu"
+    class="hidden md:hidden border-t border-gray-800 bg-gray-950 px-4 py-4 space-y-2"
+  >
+    {navLinks.map((link) => (
+      <a
+        href={link.href}
+        class="block text-sm text-gray-400 hover:text-white transition-colors py-2"
+        {...(link.external ? { target: '_blank', rel: 'noopener' } : {})}
+      >
+        {link.label}
+      </a>
+    ))}
+    <a
+      href="/#waitlist"
+      class="block text-sm bg-green-500 hover:bg-green-400 text-black font-medium text-center px-4 py-2.5 rounded transition-colors mt-2"
+    >
+      Get early access
+    </a>
+  </div>
 </header>
+
+<script>
+  const btn = document.getElementById('mobile-menu-btn');
+  const menu = document.getElementById('mobile-menu');
+  const hamburger = document.getElementById('hamburger-icon');
+  const close = document.getElementById('close-icon');
+
+  btn?.addEventListener('click', () => {
+    const isOpen = !menu?.classList.contains('hidden');
+    menu?.classList.toggle('hidden', isOpen);
+    hamburger?.classList.toggle('hidden', !isOpen);
+    close?.classList.toggle('hidden', isOpen);
+    btn.setAttribute('aria-expanded', String(!isOpen));
+  });
+</script>
