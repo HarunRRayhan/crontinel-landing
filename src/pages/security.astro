@@ -1,0 +1,74 @@
+---
+import Base from '../layouts/Base.astro';
+import Nav from '../components/Nav.astro';
+import Footer from '../components/Footer.astro';
+
+const updated = '2026-04-11';
+---
+
+<Base
+  title="Security — Crontinel"
+  description="Crontinel security practices and responsible disclosure policy."
+>
+  <Nav />
+
+  <main class="max-w-2xl mx-auto px-4 sm:px-6 py-16 prose prose-invert prose-gray max-w-none">
+    <h1 class="text-3xl font-bold text-white mb-2">Security</h1>
+    <p class="text-sm text-gray-500 mb-10">Last updated: {updated}</p>
+
+    <div class="space-y-8 text-gray-400 text-sm leading-relaxed">
+
+      <section>
+        <h2 class="text-white font-semibold text-base mb-2">Responsible Disclosure</h2>
+        <p>If you discover a security vulnerability, we encourage you to report it responsibly. Please email us at <a href="mailto:security@crontinel.com" class="text-gray-300 hover:text-white">security@crontinel.com</a> with details. We aim to acknowledge reports within 48 hours and will work with you to address the issue promptly.</p>
+        <p class="mt-2">We ask that you do not publicly disclose any vulnerability without our explicit permission. Once the issue is resolved, we welcome coordinated disclosure.</p>
+      </section>
+
+      <section>
+        <h2 class="text-white font-semibold text-base mb-2">Data Security</h2>
+        <ul class="list-disc pl-5 space-y-1">
+          <li><strong class="text-gray-300">Encryption in transit:</strong> All data between your servers, the Crontinel package, and our API is transmitted over HTTPS using TLS 1.2 or higher.</li>
+          <li><strong class="text-gray-300">Encryption at rest:</strong> Database storage is encrypted at the disk level. Sensitive fields such as API keys are hashed using bcrypt before storage.</li>
+          <li><strong class="text-gray-300">Access control:</strong> Internal systems enforce role-based access control (RBAC). Staff access to production systems requires MFA and is logged.</li>
+          <li><strong class="text-gray-300">Backups:</strong> Database backups are encrypted and retained for up to 30 days. Backups are tested periodically for integrity.</li>
+        </ul>
+      </section>
+
+      <section>
+        <h2 class="text-white font-semibold text-base mb-2">Infrastructure</h2>
+        <p>Crontinel is hosted on <strong class="text-gray-300">Cloudflare Workers and Pages</strong>, leveraging Cloudflare's global network for DDoS protection, TLS termination, and edge caching. Your application never connects directly to our infrastructure — all traffic flows through Cloudflare's proxy.</p>
+        <p class="mt-2">There is no raw database exposure to the public internet. All database access is restricted to application-layer queries behind authenticated API endpoints.</p>
+      </section>
+
+      <section>
+        <h2 class="text-white font-semibold text-base mb-2">Compliance</h2>
+        <ul class="list-disc pl-5 space-y-1">
+          <li><strong class="text-gray-300">GDPR:</strong> Crontinel is GDPR ready. We collect only what is necessary, support data export and deletion, and process data under a compliant legal basis. See our <a href="/legal/privacy" class="text-gray-300 hover:text-white">Privacy Policy</a> for full details.</li>
+          <li><strong class="text-gray-300">SOC 2:</strong> SOC 2 Type II audit is not yet completed. We are evaluating certification paths.</li>
+        </ul>
+      </section>
+
+      <section>
+        <h2 class="text-white font-semibold text-base mb-2">Authentication</h2>
+        <ul class="list-disc pl-5 space-y-1">
+          <li><strong class="text-gray-300">API keys:</strong> All API keys are hashed (bcrypt) before storage. We store only the hash, never the plaintext key.</li>
+          <li><strong class="text-gray-300">Dashboard 2FA:</strong> Two-factor authentication via TOTP is available for all dashboard accounts. We strongly recommend enabling it.</li>
+        </ul>
+      </section>
+
+      <section>
+        <h2 class="text-white font-semibold text-base mb-2">Incident Response</h2>
+        <p>In the event of a confirmed data breach or security incident affecting your data, we will notify affected users by email within <strong class="text-gray-300">72 hours</strong> of our awareness of the incident, in accordance with GDPR Article 33. Notifications will include a description of the incident, the data involved, and the steps we are taking.</p>
+        <p class="mt-2">We maintain an internal incident response plan that covers containment, investigation, communication, and remediation steps.</p>
+      </section>
+
+      <section>
+        <h2 class="text-white font-semibold text-base mb-2">Contact</h2>
+        <p>Security-related questions? <a href="mailto:security@crontinel.com" class="text-gray-300 hover:text-white">security@crontinel.com</a></p>
+      </section>
+
+    </div>
+  </main>
+
+  <Footer />
+</Base>
