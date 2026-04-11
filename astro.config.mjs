@@ -12,8 +12,8 @@ export default defineConfig({
       enabled: true,
     },
   }),
-  vite: {
-    plugins: [tailwindcss()],
+  build: {
+    assetsDir: '_astro',
   },
   integrations: [mdx()],
   site: 'https://crontinel.com',
